@@ -47,14 +47,14 @@ jobs:
       #     echo "Next version: $VERSION"
 
       - name: Publish Release
-        if: steps.extract_version.outputs.continue == 'true'
+        # if: steps.extract_version.outputs.continue == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           npx semantic-release
 
       - name: Upload plugin artifact
-        if: steps.extract_version.outputs.continue == 'true'
+        # if: steps.extract_version.outputs.continue == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: VimMotions-plugin
