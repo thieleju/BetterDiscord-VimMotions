@@ -1,0 +1,62 @@
+name: Release Plugin
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "18"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Semantic Release Dry Run (get next version)
+        id: semantic_release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          npx semantic-release --dry-run > semantic-output.txt || true
+
+      - name: Extract version
+        id: extract_version
+        run: |
+          FILE=semantic-output.txt
+          VERSION=$(grep -oP 'The next release version is \K[0-9]+\.[0-9]+\.[0-9]+' "$FILE" || true)
+          if [ -z "$VERSION" ]; then
+            echo "No version found, skipping release."
+            echo "continue=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "continue=true" >> $GITHUB_OUTPUT
+          echo "Next version: $VERSION"
+
+      - name: Publish Release
+        if: steps.extract_version.outputs.continue == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          npx semantic-release
+
+      - name: Upload plugin artifact
+        if: steps.extract_version.outputs.continue == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: VimMotions-plugin
+          path: |
+            plugins/VimMotions.plugin.js
