@@ -1,5 +1,15 @@
 # Ignore all files
 *
-# Except VimMotions plugin
+
+# Except ...
+
 !plugins/
 !plugins/VimMotions.plugin.js
+
+!.github/
+!.github/workflows/
+!.github/workflows/release.yml
+
+!.releaserc.json
+!package.json
+!package-lock.json
