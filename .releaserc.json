@@ -10,11 +10,7 @@
       {
         "assets": [
           {
-            "path": "plugins/VimMotions.plugin.js",
-            "label": "VimMotions Plugin (Source)"
-          },
-          {
-            "path": "dist/VimMotions.plugin.js",
+            "path": "dist/*.plugin.js",
             "label": "VimMotions Plugin (Minified)"
           }
         ]
