@@ -958,26 +958,26 @@ module.exports = class VimMotionsPlugin {
       if (!content) {
         for (const [originalInput, editorData] of this.aceEditors.entries()) {
           const container = originalInput.closest('[class*="channelTextArea"]');
-          if (
-            container &&
-            !this.isEditMode(originalInput) &&
-            editorData.editor
-          ) {
+          const isMainChatInput =
+            container && !this.isEditMode(originalInput) && editorData.editor;
+
+          if (isMainChatInput) {
             content = editorData.editor.getValue();
             break;
           }
         }
       }
 
-      if (content.trim()) {
-        // Save to draft store
-        this.dcModules.DraftActions.saveDraft(channelId, content, 0);
-        this.log(`Saved draft for ${channelId}: "${content}"`);
-      } else {
-        // Clear empty draft and cache
+      // Clear empty drafts
+      if (!content.trim()) {
         this.dcModules.DraftActions.clearDraft(channelId, 0);
         this.draftCache.delete(channelId);
+        return;
       }
+
+      // Save non-empty draft
+      this.dcModules.DraftActions.saveDraft(channelId, content, 0);
+      this.log(`Saved draft for ${channelId}: "${content}"`);
     } catch (e) {
       this.log(`Error saving draft on channel change: ${e.message}`, "error");
     }
@@ -1106,94 +1106,89 @@ module.exports = class VimMotionsPlugin {
     let existingContent = "";
 
     if (isEditMode) {
-      // Extract lines correctly from Discord's editable DOM for edit mode
-      try {
-        const lineNodes = originalInput.querySelectorAll(
-          "div[data-slate-node='element']"
-        );
-        if (lineNodes.length > 0) {
-          existingContent = Array.from(lineNodes)
-            .map((div) => {
-              const text = div.innerText || div.textContent || "";
-              // Remove zero-width characters (BOM, ZWSP, ZWNJ, ZWJ)
-              return text.replace(/[\uFEFF\u200B\u200C\u200D]/g, "");
-            })
-            .join("\n");
-        } else {
-          // Fallback if structure changes or not found
-          existingContent =
-            originalInput.innerText || originalInput.textContent || "";
-          existingContent = existingContent.replace(
-            /[\uFEFF\u200B\u200C\u200D]/g,
-            ""
-          );
-        }
-      } catch (e) {
-        existingContent =
-          originalInput.innerText || originalInput.textContent || "";
-        existingContent = existingContent.replace(
-          /[\uFEFF\u200B\u200C\u200D]/g,
-          ""
-        );
-      }
+      // Extract lines from Discord's editable DOM for edit mode
+      existingContent = this.extractEditModeText(originalInput);
 
-      if (existingContent && existingContent.trim()) {
-        editor.setValue(existingContent, -1);
-        editor.navigateFileEnd();
-        this.log(
-          `Loaded existing content from edit mode with newlines preserved:\n${existingContent}`
-        );
-      } else {
+      if (!existingContent || !existingContent.trim()) {
         this.log("No existing content found for edit mode.");
-      }
-    } else {
-      // For normal chat input, check cache first, then DraftStore
-      try {
-        const channelId = this.getCurrentChannelId();
-        if (channelId) {
-          // Check cache first
-          if (this.draftCache.has(channelId)) {
-            existingContent = this.draftCache.get(channelId);
-            if (existingContent && existingContent.trim()) {
-              editor.setValue(existingContent, -1);
-              editor.navigateFileEnd();
-              this.log(
-                `Loaded draft from cache for channel ${channelId}: "${existingContent}"`
-              );
-              return; // Exit early
-            }
-          }
-
-          // Check DraftStore
-          if (this.dcModules.DraftStore) {
-            const draft = this.dcModules.DraftStore.getDraft(channelId, 0);
-            if (draft && draft.trim()) {
-              existingContent = draft;
-              editor.setValue(existingContent, -1);
-              editor.navigateFileEnd();
-              this.draftCache.set(channelId, existingContent); // Update cache
-              this.log(
-                `Loaded draft from DraftStore for channel ${channelId}: "${existingContent}"`
-              );
-              return; // Exit early
-            }
-          }
-        }
-      } catch (e) {
-        this.log(`Failed to load draft: ${e.message}`, "warn");
+        return;
       }
 
-      // Fallback to checking the input itself
-      existingContent =
-        originalInput.innerText || originalInput.textContent || "";
-      if (existingContent && existingContent.trim()) {
-        editor.setValue(existingContent, -1);
+      editor.setValue(existingContent, -1);
+      editor.navigateFileEnd();
+      this.log(
+        `Loaded existing content from edit mode with newlines preserved:\n${existingContent}`
+      );
+      return;
+    }
+
+    // For normal chat input, check cache first, then DraftStore
+    try {
+      const channelId = this.getCurrentChannelId();
+      if (!channelId) return;
+
+      // Check cache first
+      const cachedDraft = this.draftCache.get(channelId);
+      if (cachedDraft && cachedDraft.trim()) {
+        editor.setValue(cachedDraft, -1);
         editor.navigateFileEnd();
         this.log(
-          `Loaded existing content from main chatbox: "${existingContent}"`
+          `Loaded draft from cache for channel ${channelId}: "${cachedDraft}"`
         );
+        return;
       }
+
+      // Check DraftStore
+      if (this.dcModules.DraftStore) {
+        const draft = this.dcModules.DraftStore.getDraft(channelId, 0);
+        if (draft && draft.trim()) {
+          editor.setValue(draft, -1);
+          editor.navigateFileEnd();
+          this.draftCache.set(channelId, draft);
+          this.log(
+            `Loaded draft from DraftStore for channel ${channelId}: "${draft}"`
+          );
+          return;
+        }
+      }
+    } catch (e) {
+      this.log(`Failed to load draft: ${e.message}`, "warn");
     }
+
+    // Fallback to input content
+    existingContent =
+      originalInput.innerText || originalInput.textContent || "";
+    if (existingContent && existingContent.trim()) {
+      editor.setValue(existingContent, -1);
+      editor.navigateFileEnd();
+      this.log(
+        `Loaded existing content from main chatbox: "${existingContent}"`
+      );
+    }
+  }
+
+  extractEditModeText(originalInput) {
+    try {
+      const lineNodes = originalInput.querySelectorAll(
+        "div[data-slate-node='element']"
+      );
+
+      if (lineNodes.length > 0) {
+        return Array.from(lineNodes)
+          .map((div) => {
+            const text = div.innerText || div.textContent || "";
+            // Remove zero-width characters (BOM, ZWSP, ZWNJ, ZWJ)
+            return text.replace(/[\uFEFF\u200B\u200C\u200D]/g, "");
+          })
+          .join("\n");
+      }
+    } catch (e) {
+      // Fall through to fallback
+    }
+
+    // Fallback
+    const content = originalInput.innerText || originalInput.textContent || "";
+    return content.replace(/[\uFEFF\u200B\u200C\u200D]/g, "");
   }
 
   setupVimMode(editor, editorDiv, originalInput) {
@@ -1700,6 +1695,7 @@ module.exports = class VimMotionsPlugin {
 
   sendMessage(content) {
     try {
+      // Validate content
       if (!content || !content.trim()) {
         this.log("No content to send");
         return;
@@ -1710,6 +1706,7 @@ module.exports = class VimMotionsPlugin {
         `Attempting to send message to channel ${channelId}: "${content}"`
       );
 
+      // Send message
       this.dcModules.MessageActions.sendMessage(
         channelId,
         {
@@ -1722,15 +1719,15 @@ module.exports = class VimMotionsPlugin {
       );
       this.log("Message sent successfully");
 
-      // Clear draft after sending
-      if (channelId && this.dcModules.DraftActions) {
-        try {
-          this.dcModules.DraftActions.clearDraft(channelId, 0);
-          this.draftCache.delete(channelId); // Also clear from cache
-          this.log(`Cleared draft for channel ${channelId}`);
-        } catch (e) {
-          this.log(`Failed to clear draft: ${e.message}`, "warn");
-        }
+      // Clear draft and cache
+      if (!channelId || !this.dcModules.DraftActions) return;
+
+      try {
+        this.dcModules.DraftActions.clearDraft(channelId, 0);
+        this.draftCache.delete(channelId);
+        this.log(`Cleared draft for channel ${channelId}`);
+      } catch (e) {
+        this.log(`Failed to clear draft: ${e.message}`, "warn");
       }
     } catch (error) {
       this.log(`Error sending message: ${error.message}`, "error");
@@ -1740,31 +1737,34 @@ module.exports = class VimMotionsPlugin {
 
   editMessage(content, e) {
     try {
-      // Normalize line endings and remove zero-width characters
-      if (typeof content === "string") {
-        // Remove Windows-style line endings
-        content = content.replace(/\r\n/g, "\n");
-        // Remove zero-width characters (BOM, ZWSP, ZWNJ, ZWJ)
-        content = content.replace(/[\uFEFF\u200B\u200C\u200D]/g, "");
-      } else {
+      // Validate and normalize content
+      if (typeof content !== "string") {
         this.log("editMessage called without valid string content", "warn");
         return;
       }
 
+      // Normalize line endings and remove zero-width characters
+      content = content.replace(/\r\n/g, "\n");
+      content = content.replace(/[\uFEFF\u200B\u200C\u200D]/g, "");
+
+      // Find message element
       const messageDiv = e?.target?.closest
         ? e.target.closest("li > [class^=message]")
         : null;
+
       if (!messageDiv) {
         this.log("Cannot find message element", "error");
         return;
       }
 
+      // Get React instance
       const instance = BdApi.ReactUtils.getInternalInstance(messageDiv);
       if (!instance) {
         this.log("Cannot find React instance for message", "error");
         return;
       }
 
+      // Find message data in React tree
       const walkable = ["child", "memoizedProps", "sibling"];
       const messageObj =
         BdApi.Utils.findInTree(instance, (m) => m?.baseMessage, { walkable })
@@ -1777,22 +1777,22 @@ module.exports = class VimMotionsPlugin {
         return;
       }
 
+      // Validate message and channel IDs
       const messageId = messageObj.id;
       const channelId = messageObj.channel_id;
+
       if (!messageId || !channelId) {
         this.log("Cannot determine message or channel ID", "error");
         return;
       }
 
-      if (
-        !this.dcModules.MessageStore ||
-        !this.dcModules.MessageStore.editMessage
-      ) {
+      // Validate MessageStore
+      if (!this.dcModules.MessageStore?.editMessage) {
         this.log("Cannot find MessageStore.editMessage", "error");
         return;
       }
 
-      // ✅ Send with preserved newlines
+      // Send edited message
       this.log(
         `Editing message ${messageId} in channel ${channelId} with content:\n${content}`
       );
