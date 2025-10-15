@@ -17,6 +17,8 @@ module.exports = class VimMotionsPlugin {
     this.currentMode = "insert";
     this.onModeChange = null;
     this.aceLoaded = false;
+    this.draftCache = new Map(); // Cache channel ID -> draft content
+    this.channelChangeUnsubscribe = null; // Flux dispatcher unsubscribe function
 
     this.defaultConfig = {
       debugMode: false,
@@ -32,7 +34,7 @@ module.exports = class VimMotionsPlugin {
 
     this.customMappings = [];
 
-    // Only keep the Discord modules we actually use for sending/editing messages
+    // Discord modules for sending/editing messages and draft management
     this.dcModules = {
       SelectedChannelStore: BdApi.Webpack.getModule(
         BdApi.Webpack.Filters.byProps("getChannelId", "getVoiceChannelId")
@@ -42,6 +44,12 @@ module.exports = class VimMotionsPlugin {
       ),
       MessageStore: BdApi.Webpack.getModule(
         BdApi.Webpack.Filters.byKeys("receiveMessage", "editMessage")
+      ),
+      DraftActions: BdApi.Webpack.getModule(
+        (m) => m.changeDraft || m.saveDraft || m.clearDraft
+      ),
+      DraftStore: BdApi.Webpack.getModule(
+        (m) => m.getDraft && m.getRecentlyEditedDrafts
       ),
     };
   }
@@ -58,6 +66,7 @@ module.exports = class VimMotionsPlugin {
       return;
     }
 
+    this.setupChannelChangeListener();
     this.addStyles();
     this.startObserving();
     this.log("VimMotions Started");
@@ -66,15 +75,37 @@ module.exports = class VimMotionsPlugin {
   stop() {
     this.log("Stopping VimMotions...");
 
-    // Destroy all Ace editors (ensures each clears its listeners)
+    // Unsubscribe from channel change events
+    if (this.channelChangeUnsubscribe) {
+      try {
+        this.channelChangeUnsubscribe();
+        this.log("Unsubscribed from channel change events");
+      } catch (e) {
+        this.log(
+          `Error unsubscribing from channel changes: ${e.message}`,
+          "warn"
+        );
+      }
+      this.channelChangeUnsubscribe = null;
+    }
+
+    // Clear draft cache
+    if (this.draftCache) {
+      this.draftCache.clear();
+    }
+
+    // Destroy all Ace editors
     this.aceEditors.forEach((_, originalInput) => {
       try {
         this.destroyAceEditor(originalInput);
-      } catch (e) {}
+      } catch (e) {
+        this.log(`Error destroying editor: ${e.message}`, "warn");
+      }
     });
     this.aceEditors.clear();
     this.activeInputs.clear();
 
+    // Disconnect mutation observer
     if (this.observer) {
       try {
         this.observer.disconnect();
@@ -82,10 +113,12 @@ module.exports = class VimMotionsPlugin {
       this.observer = null;
     }
 
+    // Unpatch Discord modules
     try {
       BdApi.Patcher.unpatchAll(this.meta.name);
     } catch (e) {}
 
+    // Remove custom styles
     BdApi.DOM.removeStyle("VimMotions");
 
     // Remove Ace from window if we loaded it
@@ -256,16 +289,16 @@ module.exports = class VimMotionsPlugin {
             ].includes(key)
           ) {
             this.addStyles();
-            this.aceEditors.forEach(({ editor }) => {
-              this.applyEditorSettings(editor);
-              editor.resize(true);
+            this.aceEditors.forEach((editorData, originalInput) => {
+              this.applyEditorSettings(editorData.editor, originalInput);
+              editorData.editor.resize(true);
               if (key === "fontSize") {
-                editor.renderer.updateFull(true);
-                const content = editor.getValue();
-                editor.setValue(content + " ", -1);
+                editorData.editor.renderer.updateFull(true);
+                const content = editorData.editor.getValue();
+                editorData.editor.setValue(content + " ", -1);
                 setTimeout(() => {
-                  editor.setValue(content, -1);
-                  editor.navigateFileEnd();
+                  editorData.editor.setValue(content, -1);
+                  editorData.editor.navigateFileEnd();
                 }, 10);
               }
             });
@@ -736,9 +769,9 @@ module.exports = class VimMotionsPlugin {
                   this.config = this.defaultConfig;
                   this.saveConfig();
                   this.addStyles();
-                  this.aceEditors.forEach(({ editor }) => {
-                    this.applyEditorSettings(editor);
-                    editor.resize(true);
+                  this.aceEditors.forEach((editorData, originalInput) => {
+                    this.applyEditorSettings(editorData.editor, originalInput);
+                    editorData.editor.resize(true);
                   });
                   BdApi.UI.showToast("Settings reset to defaults", {
                     type: "success",
@@ -866,7 +899,89 @@ module.exports = class VimMotionsPlugin {
     return channelId;
   }
 
-  // No draft saving at all (function removed)
+  // Listen for channel changes and save draft before switching
+  setupChannelChangeListener() {
+    // Don't subscribe if already subscribed
+    if (this.channelChangeUnsubscribe) {
+      this.log("Channel change listener already set up, skipping");
+      return;
+    }
+
+    if (!this.dcModules.SelectedChannelStore) {
+      this.log("SelectedChannelStore not found, cannot setup listener", "warn");
+      return;
+    }
+
+    let previousChannelId = this.dcModules.SelectedChannelStore.getChannelId();
+
+    // Subscribe to channel changes
+    const handleChannelChange = () => {
+      const newChannelId = this.dcModules.SelectedChannelStore.getChannelId();
+
+      if (previousChannelId && previousChannelId !== newChannelId) {
+        // Save draft for the OLD channel before switching
+        this.saveCurrentChannelDraft(previousChannelId);
+      }
+
+      previousChannelId = newChannelId;
+    };
+
+    // Use Flux dispatcher to listen for channel changes
+    try {
+      const Dispatcher = BdApi.Webpack.getModule(
+        (m) => m.dispatch && m.subscribe
+      );
+      if (Dispatcher) {
+        this.channelChangeUnsubscribe = Dispatcher.subscribe(
+          "CHANNEL_SELECT",
+          handleChannelChange
+        );
+        this.log("Subscribed to channel change events");
+      } else {
+        this.log("Flux Dispatcher not found", "warn");
+      }
+    } catch (e) {
+      this.log(
+        `Failed to setup channel change listener: ${e.message}`,
+        "error"
+      );
+    }
+  }
+
+  // Save draft for current channel from Ace editor
+  saveCurrentChannelDraft(channelId) {
+    try {
+      // First, try to get content from cache (updated as we type)
+      let content = this.draftCache.get(channelId) || "";
+
+      // If not in cache, try to get from active editor
+      if (!content) {
+        for (const [originalInput, editorData] of this.aceEditors.entries()) {
+          const container = originalInput.closest('[class*="channelTextArea"]');
+          if (
+            container &&
+            !this.isEditMode(originalInput) &&
+            editorData.editor
+          ) {
+            content = editorData.editor.getValue();
+            break;
+          }
+        }
+      }
+
+      if (content.trim()) {
+        // Save to draft store
+        this.dcModules.DraftActions.saveDraft(channelId, content, 0);
+        this.log(`Saved draft for ${channelId}: "${content}"`);
+      } else {
+        // Clear empty draft and cache
+        this.dcModules.DraftActions.clearDraft(channelId, 0);
+        this.draftCache.delete(channelId);
+      }
+    } catch (e) {
+      this.log(`Error saving draft on channel change: ${e.message}`, "error");
+    }
+  }
 
   attachAceEditor(originalInput) {
     if (!this.aceLoaded || !window.ace) {
@@ -880,7 +995,6 @@ module.exports = class VimMotionsPlugin {
       this.loadInitialContent(editor, originalInput);
 
       const isEditMode = this.isEditMode(originalInput);
-      this.log(`Attaching editor. Is edit mode: ${isEditMode}`);
 
       this.setupVimMode(editor, editorDiv, originalInput);
 
@@ -888,11 +1002,10 @@ module.exports = class VimMotionsPlugin {
       // This is especially important when switching from edit mode back to main chatbox
       // We need to wait longer to ensure vimMode is initialized (setupVimMode uses 50ms + 100ms = 150ms total)
       setTimeout(() => {
-        this.log("Running delayed focus/insert mode setup at 200ms");
         const editorData = this.aceEditors.get(originalInput);
-        this.log(
-          `Editor data exists: ${!!editorData}, has vimMode: ${!!editorData?.vimMode}`
-        );
+        // this.log(
+        //   `Editor data exists: ${!!editorData}, has vimMode: ${!!editorData?.vimMode}`
+        // );
 
         if (editorData && editorData.editor && editorData.textarea) {
           try {
@@ -907,20 +1020,13 @@ module.exports = class VimMotionsPlugin {
                 const vim = editorData.vimMode.constructor.Vim;
                 if (vim) {
                   vim.handleKey(editorData.vimMode, "i", null);
-                  this.log(
-                    `Forced insert mode for main chatbox after attach. Current mode: ${this.currentMode}`
-                  );
                 } else {
                   this.log("Vim constructor not found", "warn");
                 }
               } else {
                 this.log("vimMode not available yet in editorData", "warn");
               }
-            } else {
-              this.log("Is edit mode, not forcing insert mode");
             }
-
-            this.log("Editor focused and initialized after attach");
           } catch (e) {
             this.log(
               `Error focusing editor after attach: ${e.message}`,
@@ -931,10 +1037,6 @@ module.exports = class VimMotionsPlugin {
           this.log("Editor data not found or incomplete", "warn");
         }
       }, 200);
-
-      // no draft/emoji sync here
-
-      // keep a stored keydown/blur handling in create/setup
     } catch (e) {
       this.log(`Failed to attach Ace editor: ${e.message}`, "error");
     }
@@ -954,7 +1056,7 @@ module.exports = class VimMotionsPlugin {
 
     // Initialize Ace
     const editor = window.ace.edit(editorDiv);
-    this.applyEditorSettings(editor);
+    this.applyEditorSettings(editor, originalInput);
 
     // Placeholder from Discord DOM
     const placeholderText = this.getPlaceholderText(originalInput);
@@ -997,46 +1099,94 @@ module.exports = class VimMotionsPlugin {
   }
 
   loadInitialContent(editor, originalInput) {
-    // Only populate when in edit mode
-    if (!this.isEditMode(originalInput)) {
-      this.log("Not in edit mode, skipping initial content load");
-      return;
-    }
+    // Load existing content - supports both edit mode and draft store
+    const isEditMode = this.isEditMode(originalInput);
 
     // Extract lines correctly from Discord’s editable DOM
     let existingContent = "";
 
-    try {
-      const lineNodes = originalInput.querySelectorAll(
-        "div[data-slate-node='element']"
-      );
-      if (lineNodes.length > 0) {
-        existingContent = Array.from(lineNodes)
-          .map((div) => div.innerText || div.textContent || "")
-          .join("\n");
-      } else {
-        // Fallback if structure changes or not found
+    if (isEditMode) {
+      // Extract lines correctly from Discord's editable DOM for edit mode
+      try {
+        const lineNodes = originalInput.querySelectorAll(
+          "div[data-slate-node='element']"
+        );
+        if (lineNodes.length > 0) {
+          existingContent = Array.from(lineNodes)
+            .map((div) => div.innerText || div.textContent || "")
+            .join("\n");
+        } else {
+          // Fallback if structure changes or not found
+          existingContent =
+            originalInput.innerText || originalInput.textContent || "";
+        }
+      } catch (e) {
         existingContent =
           originalInput.innerText || originalInput.textContent || "";
       }
-    } catch (e) {
+
+      if (existingContent && existingContent.trim()) {
+        editor.setValue(existingContent, -1);
+        editor.navigateFileEnd();
+        this.log(
+          `Loaded existing content from edit mode with newlines preserved:\n${existingContent}`
+        );
+      } else {
+        this.log("No existing content found for edit mode.");
+      }
+    } else {
+      // For normal chat input, check cache first, then DraftStore
+      try {
+        const channelId = this.getCurrentChannelId();
+        if (channelId) {
+          // Check cache first
+          if (this.draftCache.has(channelId)) {
+            existingContent = this.draftCache.get(channelId);
+            if (existingContent && existingContent.trim()) {
+              editor.setValue(existingContent, -1);
+              editor.navigateFileEnd();
+              this.log(
+                `Loaded draft from cache for channel ${channelId}: "${existingContent}"`
+              );
+              return; // Exit early
+            }
+          }
+
+          // Check DraftStore
+          if (this.dcModules.DraftStore) {
+            const draft = this.dcModules.DraftStore.getDraft(channelId, 0);
+            if (draft && draft.trim()) {
+              existingContent = draft;
+              editor.setValue(existingContent, -1);
+              editor.navigateFileEnd();
+              this.draftCache.set(channelId, existingContent); // Update cache
+              this.log(
+                `Loaded draft from DraftStore for channel ${channelId}: "${existingContent}"`
+              );
+              return; // Exit early
+            }
+          }
+        }
+      } catch (e) {
+        this.log(`Failed to load draft: ${e.message}`, "warn");
+      }
+
+      // Fallback to checking the input itself
       existingContent =
         originalInput.innerText || originalInput.textContent || "";
-    }
-
-    if (existingContent && existingContent.trim()) {
-      editor.setValue(existingContent, -1);
-      editor.navigateFileEnd();
-      this.log(
-        `Loaded existing content with newlines preserved:\n${existingContent}`
-      );
-    } else {
-      this.log("No existing content found for edit mode.");
+      if (existingContent && existingContent.trim()) {
+        editor.setValue(existingContent, -1);
+        editor.navigateFileEnd();
+        this.log(
+          `Loaded existing content from main chatbox: "${existingContent}"`
+        );
+      }
     }
   }
 
   setupVimMode(editor, editorDiv, originalInput) {
     let vimMode = null;
+
     const textarea = editor.textInput.getElement();
     const keySequences = this.initializeKeySequences();
 
@@ -1418,7 +1568,7 @@ module.exports = class VimMotionsPlugin {
     }
   }
 
-  applyEditorSettings(editor) {
+  applyEditorSettings(editor, originalInput) {
     const fontSize = this.config?.fontSize || 14;
     const fontFamily = this.config?.fontFamily || "Consolas";
     const fontColor = this.config?.fontColor || "#dcddde";
@@ -1515,6 +1665,16 @@ module.exports = class VimMotionsPlugin {
 
     editor.session.on("change", () => {
       setTimeout(updateHeight, 10);
+
+      // Update draft cache for current channel (not in edit mode)
+      try {
+        const channelId = this.getCurrentChannelId();
+        if (channelId && !this.isEditMode(originalInput)) {
+          this.draftCache.set(channelId, editor.getValue());
+        }
+      } catch (e) {
+        // Silent fail - cache update is not critical
+      }
     });
     setTimeout(updateHeight, 100);
   }
@@ -1542,6 +1702,17 @@ module.exports = class VimMotionsPlugin {
         {}
       );
       this.log("Message sent successfully");
+
+      // Clear draft after sending
+      if (channelId && this.dcModules.DraftActions) {
+        try {
+          this.dcModules.DraftActions.clearDraft(channelId, 0);
+          this.draftCache.delete(channelId); // Also clear from cache
+          this.log(`Cleared draft for channel ${channelId}`);
+        } catch (e) {
+          this.log(`Failed to clear draft: ${e.message}`, "warn");
+        }
+      }
     } catch (error) {
       this.log(`Error sending message: ${error.message}`, "error");
       console.error("[VimMotions] Full error:", error);
