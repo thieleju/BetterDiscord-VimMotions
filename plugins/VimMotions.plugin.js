@@ -1,8 +1,11 @@
 /**
  * @name VimMotions
- * @author github.com/thieleju
- * @description Minimal Vim motions for Discord using Ace Editor's Vim mode (draft logic removed)
- * @version 1.0.0
+ * @author Julian
+ * @description Vim motions for Discord using Ace Editor
+ * @version 1.1.0
+ * @website https://github.com/thieleju/BetterDiscord-VimMotions
+ * @source https://github.com/thieleju/BetterDiscord-VimMotions/blob/main/plugins/VimMotions.plugin.js
+ * @updateUrl https://github.com/thieleju/BetterDiscord-VimMotions/raw/refs/heads/main/plugins/VimMotions.plugin.js
  */
 
 const React = BdApi.React;
