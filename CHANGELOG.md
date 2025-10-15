@@ -1,3 +1,10 @@
+## [1.2.1](https://github.com/thieleju/BetterDiscord-VimMotions/compare/VimMotions-v1.2.0...VimMotions-v1.2.1) (2025-10-15)
+
+
+### Bug Fixes
+
+* fix issue in .releaserc.json ([fe0cf53](https://github.com/thieleju/BetterDiscord-VimMotions/commit/fe0cf538ca9bd582d0aab2064b3b96ab75dab66e))
+
 # [1.2.0](https://github.com/thieleju/BetterDiscord-VimMotions/compare/VimMotions-v1.1.0...VimMotions-v1.2.0) (2025-10-15)
 
 
