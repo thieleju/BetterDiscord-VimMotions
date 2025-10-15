@@ -1113,16 +1113,28 @@ module.exports = class VimMotionsPlugin {
         );
         if (lineNodes.length > 0) {
           existingContent = Array.from(lineNodes)
-            .map((div) => div.innerText || div.textContent || "")
+            .map((div) => {
+              const text = div.innerText || div.textContent || "";
+              // Remove zero-width characters (BOM, ZWSP, ZWNJ, ZWJ)
+              return text.replace(/[\uFEFF\u200B\u200C\u200D]/g, "");
+            })
             .join("\n");
         } else {
           // Fallback if structure changes or not found
           existingContent =
             originalInput.innerText || originalInput.textContent || "";
+          existingContent = existingContent.replace(
+            /[\uFEFF\u200B\u200C\u200D]/g,
+            ""
+          );
         }
       } catch (e) {
         existingContent =
           originalInput.innerText || originalInput.textContent || "";
+        existingContent = existingContent.replace(
+          /[\uFEFF\u200B\u200C\u200D]/g,
+          ""
+        );
       }
 
       if (existingContent && existingContent.trim()) {
@@ -1633,6 +1645,13 @@ module.exports = class VimMotionsPlugin {
       }
     }, 10);
 
+    // Cache DOM elements for better performance
+    const aceContent = editor.container.querySelector(".ace_content");
+    const discordTextArea = editor.container.closest('[class*="textArea"]');
+    const channelTextArea = editor.container.closest(
+      '[class*="channelTextArea"]'
+    );
+
     const updateHeight = () => {
       try {
         editor.renderer.updateFull();
@@ -1650,30 +1669,30 @@ module.exports = class VimMotionsPlugin {
           Math.min(contentHeight + totalPadding, maxHeight)
         );
         editor.container.style.height = `${newHeight}px`;
-        const content = editor.container.querySelector(".ace_content");
-        if (content)
-          content.style.paddingBottom = hasMultipleLines ? "10px" : "0px";
-        const discordTextArea = editor.container.closest('[class*="textArea"]');
+        if (aceContent)
+          aceContent.style.paddingBottom = hasMultipleLines ? "10px" : "0px";
         if (discordTextArea) discordTextArea.style.height = `${newHeight}px`;
-        const channelTextArea = editor.container.closest(
-          '[class*="channelTextArea"]'
-        );
         if (channelTextArea) channelTextArea.style.minHeight = `${newHeight}px`;
         editor.resize(true);
       } catch (e) {}
     };
 
+    // Optimize: Cache the isEditMode result and channelId since they don't change per editor instance
+    const cachedIsEditMode = this.isEditMode(originalInput);
+    const cachedChannelId = !cachedIsEditMode
+      ? this.getCurrentChannelId()
+      : null;
+
     editor.session.on("change", () => {
       setTimeout(updateHeight, 10);
 
-      // Update draft cache for current channel (not in edit mode)
-      try {
-        const channelId = this.getCurrentChannelId();
-        if (channelId && !this.isEditMode(originalInput)) {
-          this.draftCache.set(channelId, editor.getValue());
+      // Update draft cache for current channel (only for main chat input, not edit mode)
+      if (cachedChannelId && !cachedIsEditMode) {
+        try {
+          this.draftCache.set(cachedChannelId, editor.getValue());
+        } catch (e) {
+          // Silent fail - cache update is not critical
         }
-      } catch (e) {
-        // Silent fail - cache update is not critical
       }
     });
     setTimeout(updateHeight, 100);
@@ -1721,10 +1740,12 @@ module.exports = class VimMotionsPlugin {
 
   editMessage(content, e) {
     try {
-      // Normalize line endings (keep real \n characters)
+      // Normalize line endings and remove zero-width characters
       if (typeof content === "string") {
-        // Make sure Windows-style line endings are normalized
+        // Remove Windows-style line endings
         content = content.replace(/\r\n/g, "\n");
+        // Remove zero-width characters (BOM, ZWSP, ZWNJ, ZWJ)
+        content = content.replace(/[\uFEFF\u200B\u200C\u200D]/g, "");
       } else {
         this.log("editMessage called without valid string content", "warn");
         return;
