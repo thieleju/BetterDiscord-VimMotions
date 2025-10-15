@@ -1,3 +1,20 @@
+# [1.1.0](https://github.com/thieleju/BetterDiscord-VimMotions/compare/VimMotions-v1.0.0...VimMotions-v1.1.0) (2025-10-15)
+
+
+### Bug Fixes
+
+* add listener for channel change event ([356277c](https://github.com/thieleju/BetterDiscord-VimMotions/commit/356277c6a5863f6235e2fe50fa213dd7ad7d8292))
+* filter whitspace characters and cache certain things to improve performance ([7ff1451](https://github.com/thieleju/BetterDiscord-VimMotions/commit/7ff1451c8c7f155b80052bb8b8724951f4fe7f4a))
+* refocus editor after inserting emoji ([5a51707](https://github.com/thieleju/BetterDiscord-VimMotions/commit/5a517071ca1f30dd66a1c477eafee1757d24cbd5))
+* remove emoji stuff and first fixed issues with switching modes after editing messages ([664b2bb](https://github.com/thieleju/BetterDiscord-VimMotions/commit/664b2bba4f65e7cc7cc54db8adb125a5d416908e))
+* remove focus listener ([7e99584](https://github.com/thieleju/BetterDiscord-VimMotions/commit/7e995846fe0cf3c519023d81c8ee8fa8d8f9fc74))
+
+
+### Features
+
+* add draftchange listener to respond when an emoji is pasted ([6fdf216](https://github.com/thieleju/BetterDiscord-VimMotions/commit/6fdf2166be0b3cac4c3c46eda053d32e43d3384a))
+* fix draft store ([70a893b](https://github.com/thieleju/BetterDiscord-VimMotions/commit/70a893bb9ed45085f58cfb607fc51a2878698362))
+
 # 1.0.0 (2025-10-14)
 
 
