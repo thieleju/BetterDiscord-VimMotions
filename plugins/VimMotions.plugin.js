@@ -17,6 +17,7 @@ module.exports = class VimMotionsPlugin {
     this.currentMode = "insert";
     this.onModeChange = null;
     this.aceLoaded = false;
+    this.drafts = {}; // In-memory storage for drafts
     this.defaultConfig = {
       debugMode: false,
       fontSize: 16,
@@ -1032,6 +1033,18 @@ module.exports = class VimMotionsPlugin {
       this.setupContentSync(editor, originalInput);
       this.setupEmojiDetection(editor, originalInput, discordModules);
 
+      // Save draft only when switching editors
+      editor.on("blur", () => {
+        const content = editor.getValue();
+        const channelId = this.getCurrentChannelId();
+        if (channelId) {
+          this.drafts[channelId] = content;
+          this.log(
+            `Saved in-memory draft for channel ${channelId} on blur: "${content}"`
+          );
+        }
+      });
+
       this.log("Ace editor attached");
     } catch (e) {
       this.log(`Failed to attach Ace editor: ${e.message}`, "error");
@@ -1078,28 +1091,56 @@ module.exports = class VimMotionsPlugin {
 
   getDiscordModules() {
     return {
-      DraftStore: BdApi.Webpack.getModule(
-        (m) => m.getDraft && m.getRecentlyEditedDrafts
-      ),
       SelectedChannelStore: BdApi.Webpack.getModule(
         BdApi.Webpack.Filters.byProps("getChannelId", "getVoiceChannelId")
+      ),
+      MessageActions: BdApi.Webpack.getModule(
+        (m) => m.sendMessage && m.receiveMessage
+      ),
+      MessageStore: BdApi.Webpack.getModule(
+        BdApi.Webpack.Filters.byKeys("receiveMessage", "editMessage")
       ),
       DraftActions: BdApi.Webpack.getModule(
         (m) => m.changeDraft || m.saveDraft || m.clearDraft
       ),
+      DraftStore: BdApi.Webpack.getModule(
+        (m) => m.getDraft && m.getRecentlyEditedDrafts
+      ),
     };
   }
 
-  loadInitialDraft(editor, { DraftStore, SelectedChannelStore }) {
-    if (DraftStore && SelectedChannelStore) {
-      const channelId = SelectedChannelStore.getChannelId();
-      const draft = DraftStore.getDraft(channelId, 0);
-      if (draft) {
-        editor.setValue(draft, -1);
-        editor.navigateFileEnd();
-        return;
-      }
+  // Replace DraftStore-based draft handling with local storage
+  loadInitialDraft(editor) {
+    const channelId = this.getCurrentChannelId();
+    if (!channelId) {
+      this.log("Cannot load draft: No channel ID available", "error");
+      return;
     }
+
+    const draft = this.drafts[channelId];
+
+    if (draft && draft.trim()) {
+      editor.setValue(draft, -1);
+      editor.navigateFileEnd();
+      this.log(`Loaded in-memory draft for channel ${channelId}: "${draft}"`);
+    } else {
+      this.log(`No in-memory draft found for channel ${channelId}`);
+    }
+  }
+
+  syncToDiscordInput(originalInput, content) {
+    // Update Discord's input to trigger their state management
+    originalInput.textContent = content;
+    this.log(`Synced to Discord input: "${content}"`);
+
+    // Dispatch input event to notify Discord
+    const inputEvent = new Event("input", { bubbles: true, cancelable: true });
+    originalInput.dispatchEvent(inputEvent);
+  }
+
+  getCurrentChannelId() {
+    const { SelectedChannelStore } = this.getDiscordModules();
+    return SelectedChannelStore?.getChannelId() || null;
   }
 
   loadInitialContent(editor, originalInput, discordModules) {
@@ -1114,7 +1155,7 @@ module.exports = class VimMotionsPlugin {
     }
 
     // If no existing content, try loading draft
-    this.loadInitialDraft(editor, discordModules);
+    this.loadInitialDraft(editor);
   }
 
   setupVimMode(editor, editorDiv, originalInput) {
@@ -1264,7 +1305,9 @@ module.exports = class VimMotionsPlugin {
     ) {
       e.preventDefault();
       e.stopPropagation();
+
       editor.insert(e.key);
+
       this.log(`Manual insert (insert mode): ${e.key}`);
     } else {
       // Let Vim handle the keys in normal/visual mode or for vim commands
@@ -1383,7 +1426,7 @@ module.exports = class VimMotionsPlugin {
       }
 
       if (isEditMode) {
-        this.editMessage(content, e, originalInput);
+        this.editMessage(content, e);
 
         this.log(`Enter in ${this.currentMode} mode: message edited`);
       } else {
@@ -1496,9 +1539,9 @@ module.exports = class VimMotionsPlugin {
   setupEmojiDetection(
     editor,
     originalInput,
-    { DraftStore, SelectedChannelStore, DraftActions }
+    { SelectedChannelStore, MessageActions, DraftActions, DraftStore }
   ) {
-    if (!DraftStore || !SelectedChannelStore || !DraftActions) {
+    if (!SelectedChannelStore || !MessageActions) {
       this.log("Discord modules not found, emoji detection disabled", "warn");
       return;
     }
@@ -1702,15 +1745,6 @@ module.exports = class VimMotionsPlugin {
     setTimeout(updateHeight, 100);
   }
 
-  syncToDiscordInput(originalInput, content) {
-    // Update Discord's input to trigger their state management
-    originalInput.textContent = content;
-
-    // Dispatch input event to notify Discord
-    const event = new Event("input", { bubbles: true, cancelable: true });
-    originalInput.dispatchEvent(event);
-  }
-
   sendMessage(content) {
     try {
       if (!content || !content.trim()) {
@@ -1718,16 +1752,10 @@ module.exports = class VimMotionsPlugin {
         return;
       }
 
-      // Get Discord's message sending module
-      const MessageActions = BdApi.Webpack.getModule(
-        (m) => m.sendMessage && m.receiveMessage
-      );
+      // Get Discord modules
+      const { MessageActions, SelectedChannelStore } = this.getDiscordModules();
 
       // Get the current channel ID
-      const SelectedChannelStore = BdApi.Webpack.getModule(
-        BdApi.Webpack.Filters.byProps("getChannelId", "getVoiceChannelId")
-      );
-
       const channelId = SelectedChannelStore?.getChannelId();
       if (!channelId) {
         this.log("Could not get channel ID", "error");
@@ -1778,7 +1806,7 @@ module.exports = class VimMotionsPlugin {
     return operations !== null;
   }
 
-  editMessage(content, e, originalInput) {
+  editMessage(content, e) {
     try {
       // Target the message DOM element from the event
       const messageDiv = e?.target?.closest
@@ -1818,9 +1846,7 @@ module.exports = class VimMotionsPlugin {
         return;
       }
 
-      const MessageStore = BdApi.Webpack.getModule(
-        BdApi.Webpack.Filters.byKeys("receiveMessage", "editMessage")
-      );
+      const { MessageStore } = this.getDiscordModules();
       if (!MessageStore || !MessageStore.editMessage) {
         this.log("Cannot find MessageStore.editMessage", "error");
         return;
