@@ -1404,58 +1404,12 @@ module.exports = class VimMotionsPlugin {
         this.handleEditorClick(editor, textarea, vimMode);
       editorDiv.addEventListener("click", clickListener);
 
-      // Add focus listener to detect when returning to this editor
-      const focusListener = () => {
-        if (this.isEditMode(originalInput)) return;
-
-        if (this.currentMode === "insert") return;
-
-        const editorData = this.aceEditors.get(originalInput);
-        if (!editorData || !editorData.vimMode) return;
-
-        const currentVimMode = editorData.vimMode;
-        const vim = currentVimMode.constructor?.Vim;
-        if (!vim) return;
-
-        try {
-          this.justEnteredInsertMode = false;
-
-          // Update CSS classes immediately
-          const editorDiv = editor.container.closest(".vim-ace-editor");
-          if (editorDiv) {
-            editorDiv.classList.remove("vim-normal-mode", "vim-visual-mode");
-            editorDiv.classList.add("vim-insert-mode");
-          }
-
-          // Try direct Vim state change first
-          if (currentVimMode.state?.vim) {
-            currentVimMode.state.vim.insertMode = true;
-            this.currentMode = "insert";
-
-            setTimeout(() => (this.justEnteredInsertMode = false), 60);
-            return;
-          }
-
-          // Fallback: simulate pressing "i"
-          vim.handleKey(currentVimMode, "i", null);
-          this.currentMode = "insert"; // Ensure mode is set even with fallback
-          setTimeout(() => (this.justEnteredInsertMode = false), 60);
-        } catch (e) {
-          // ignore all errors silently
-        }
-      };
-
-      editorDiv.addEventListener("focus", focusListener, true);
-      editorDiv.addEventListener("click", focusListener);
-      textarea.addEventListener("focus", focusListener);
-
       // store listeners and vimMode for cleanup and later access
       const prev = this.aceEditors.get(originalInput) || {};
       this.aceEditors.set(originalInput, {
         ...prev,
         keydownListener,
         clickListener,
-        focusListener,
         editorDiv,
         vimMode, // Store vimMode so we can access it later
       });
@@ -1997,7 +1951,6 @@ module.exports = class VimMotionsPlugin {
         wrapper,
         keydownListener,
         clickListener,
-        focusListener,
         editorDiv,
         textarea,
       } = editorData;
@@ -2014,11 +1967,6 @@ module.exports = class VimMotionsPlugin {
           ta.removeEventListener("keydown", keydownListener);
         if (editorDiv && clickListener)
           editorDiv.removeEventListener("click", clickListener);
-        if (editorDiv && focusListener) {
-          editorDiv.removeEventListener("focus", focusListener, true);
-          editorDiv.removeEventListener("click", focusListener);
-        }
-        if (ta && focusListener) ta.removeEventListener("focus", focusListener);
       } catch (err) {}
 
       // Destroy Ace editor safely
