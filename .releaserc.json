@@ -7,12 +7,27 @@
     ["@semantic-release/changelog", { "changelogFile": "CHANGELOG.md" }],
     [
       "@semantic-release/github",
-      { "assets": ["plugins/VimMotions.plugin.js"] }
+      {
+        "assets": [
+          {
+            "path": "plugins/VimMotions.plugin.js",
+            "label": "VimMotions Plugin (Source)"
+          },
+          {
+            "path": "dist/VimMotions.plugin.js",
+            "label": "VimMotions Plugin (Minified)"
+          }
+        ]
+      }
     ],
     [
       "@semantic-release/git",
       {
-        "assets": ["CHANGELOG.md", "package.json"],
+        "assets": [
+          "CHANGELOG.md",
+          "package.json",
+          "plugins/VimMotions.plugin.js"
+        ],
         "message": "chore(release): ${nextRelease.version} [skip ci]\n\n${nextRelease.notes}"
       }
     ]
