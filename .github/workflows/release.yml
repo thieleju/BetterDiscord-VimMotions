@@ -25,38 +25,54 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # - name: Semantic Release Dry Run (get next version)
-      #   id: semantic_release
-      #   env:
-      #     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      #   run: |
-      #     npx semantic-release --dry-run > semantic-output.txt || true
+      - name: Semantic Release Dry Run (get next version)
+        id: semantic_release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          npx semantic-release --dry-run > semantic-output.txt 2>&1 || true
+          cat semantic-output.txt
 
-      # - name: Extract version
-      #   id: extract_version
-      #   run: |
-      #     FILE=semantic-output.txt
-      #     VERSION=$(grep -oP 'The next release version is \K[0-9]+\.[0-9]+\.[0-9]+' "$FILE" || true)
-      #     if [ -z "$VERSION" ]; then
-      #       echo "No version found, skipping release."
-      #       echo "continue=false" >> $GITHUB_OUTPUT
-      #       exit 0
-      #     fi
-      #     echo "VERSION=$VERSION" >> $GITHUB_ENV
-      #     echo "continue=true" >> $GITHUB_OUTPUT
-      #     echo "Next version: $VERSION"
+      - name: Extract version
+        id: extract_version
+        run: |
+          FILE=semantic-output.txt
+          VERSION=$(grep -oP 'The next release version is \K[0-9]+\.[0-9]+\.[0-9]+' "$FILE" || true)
+          if [ -z "$VERSION" ]; then
+            echo "No version found, skipping release."
+            echo "continue=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "continue=true" >> $GITHUB_OUTPUT
+          echo "Next version: $VERSION"
+
+      - name: Build plugin with new version
+        if: steps.extract_version.outputs.continue == 'true'
+        run: |
+          npm run build ${{ env.VERSION }}
+
+      - name: Commit version update
+        if: steps.extract_version.outputs.continue == 'true'
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add plugins/VimMotions.plugin.js
+          git commit -m "chore: update plugin version to ${{ env.VERSION }} [skip ci]" || echo "No changes to commit"
+          git push
 
       - name: Publish Release
-        # if: steps.extract_version.outputs.continue == 'true'
+        if: steps.extract_version.outputs.continue == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           npx semantic-release
 
-      - name: Upload plugin artifact
-        # if: steps.extract_version.outputs.continue == 'true'
+      - name: Upload plugin artifacts
+        if: steps.extract_version.outputs.continue == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: VimMotions-plugin
           path: |
             plugins/VimMotions.plugin.js
+            dist/VimMotions.plugin.js
