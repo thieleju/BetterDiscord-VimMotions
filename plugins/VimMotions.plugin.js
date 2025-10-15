@@ -1,7 +1,7 @@
 /**
  * @name VimMotions
  * @author github.com/thieleju
- * @description Vim motions for Discord using Ace Editor's Vim mode
+ * @description Minimal Vim motions for Discord using Ace Editor's Vim mode (draft logic removed)
  * @version 1.0.0
  */
 
@@ -17,21 +17,33 @@ module.exports = class VimMotionsPlugin {
     this.currentMode = "insert";
     this.onModeChange = null;
     this.aceLoaded = false;
-    this.drafts = {}; // In-memory storage for drafts
+
     this.defaultConfig = {
       debugMode: false,
       fontSize: 16,
       fontFamily: "Consolas",
-      fontColor: "#e3e3e3", // Discord's default text color
-      backgroundColor: "#222327", // Discord's input background
+      fontColor: "#e3e3e3",
+      backgroundColor: "#222327",
       cursorColor: "#a52327",
-      highlightActiveLine: false, // Highlight the current line
-      sendInInsertMode: false, // Send message with Enter in insert mode
-      sendInNormalMode: true, // Send message with Enter in normal mode
+      highlightActiveLine: false,
+      sendInInsertMode: false,
+      sendInNormalMode: true,
     };
 
-    // Store customMappings separately from config
     this.customMappings = [];
+
+    // Only keep the Discord modules we actually use for sending/editing messages
+    this.dcModules = {
+      SelectedChannelStore: BdApi.Webpack.getModule(
+        BdApi.Webpack.Filters.byProps("getChannelId", "getVoiceChannelId")
+      ),
+      MessageActions: BdApi.Webpack.getModule(
+        (m) => m.sendMessage && m.receiveMessage
+      ),
+      MessageStore: BdApi.Webpack.getModule(
+        BdApi.Webpack.Filters.byKeys("receiveMessage", "editMessage")
+      ),
+    };
   }
 
   async start() {
@@ -54,52 +66,55 @@ module.exports = class VimMotionsPlugin {
   stop() {
     this.log("Stopping VimMotions...");
 
-    // Destroy all Ace editors
-    this.aceEditors.forEach((editor, input) => {
-      this.destroyAceEditor(input);
+    // Destroy all Ace editors (ensures each clears its listeners)
+    this.aceEditors.forEach((_, originalInput) => {
+      try {
+        this.destroyAceEditor(originalInput);
+      } catch (e) {}
     });
     this.aceEditors.clear();
     this.activeInputs.clear();
 
     if (this.observer) {
-      this.observer.disconnect();
+      try {
+        this.observer.disconnect();
+      } catch (e) {}
       this.observer = null;
     }
 
+    try {
+      BdApi.Patcher.unpatchAll(this.meta.name);
+    } catch (e) {}
+
     BdApi.DOM.removeStyle("VimMotions");
-    BdApi.Patcher.unpatchAll(this.meta.name);
 
     // Remove Ace from window if we loaded it
     if (window.ace) {
-      delete window.ace;
+      try {
+        delete window.ace;
+      } catch (e) {}
     }
   }
 
-  // ============================================================================
   // Ace Editor Loading
-  // ============================================================================
 
   async loadAceEditor() {
-    // Check if Ace is already loaded
     if (window.ace) {
       this.aceLoaded = true;
       return;
     }
 
     try {
-      // Load Ace Editor from CDN
       await this.loadScript(
         "https://cdn.jsdelivr.net/npm/ace-builds@1.43.3/src-min-noconflict/ace.js"
       );
 
-      // Configure Ace
       if (window.ace) {
         window.ace.config.set(
           "basePath",
           "https://cdn.jsdelivr.net/npm/ace-builds@1.43.3/src-min-noconflict/"
         );
 
-        // Load Vim keybindings
         await this.loadScript(
           "https://cdn.jsdelivr.net/npm/ace-builds@1.43.3/src-min-noconflict/keybinding-vim.js"
         );
@@ -123,16 +138,12 @@ module.exports = class VimMotionsPlugin {
     });
   }
 
-  // ============================================================================
   // Configuration
-  // ============================================================================
 
   loadConfig() {
-    // Load saved config
     const saved = BdApi.Data.load(this.meta.name, "config");
 
     if (saved) {
-      // Extract only the properties we care about, handling nested structure if present
       this.config = {
         debugMode:
           saved.settings?.debugMode ??
@@ -172,7 +183,6 @@ module.exports = class VimMotionsPlugin {
           this.defaultConfig.sendInNormalMode,
       };
 
-      // Load customMappings separately (with backward compatibility)
       this.customMappings =
         saved.customMappings ?? saved.settings?.customMappings ?? [];
     } else {
@@ -180,12 +190,10 @@ module.exports = class VimMotionsPlugin {
       this.customMappings = [];
     }
 
-    // Always save to ensure clean format
     this.saveConfig();
   }
 
   saveConfig() {
-    // Save settings and customMappings separately
     const dataToSave = {
       debugMode: this.config.debugMode,
       fontSize: this.config.fontSize,
@@ -196,7 +204,7 @@ module.exports = class VimMotionsPlugin {
       highlightActiveLine: this.config.highlightActiveLine,
       sendInInsertMode: this.config.sendInInsertMode,
       sendInNormalMode: this.config.sendInNormalMode,
-      customMappings: this.customMappings, // Save customMappings separately
+      customMappings: this.customMappings,
     };
     BdApi.Data.save(this.meta.name, "config", dataToSave);
   }
@@ -216,7 +224,6 @@ module.exports = class VimMotionsPlugin {
         const [newMappingTimeout, setNewMappingTimeout] = useState("normal");
 
         const updateConfig = (key, value) => {
-          // Build new config without customMappings (stored separately)
           const newConfig = {
             debugMode: key === "debugMode" ? value : config.debugMode,
             fontSize: key === "fontSize" ? value : config.fontSize,
@@ -236,10 +243,8 @@ module.exports = class VimMotionsPlugin {
           };
           setConfig(newConfig);
           this.config = newConfig;
-          // customMappings are NOT touched here - they're stored in this.customMappings
           this.saveConfig();
 
-          // Re-apply settings to all active editors
           if (
             [
               "fontSize",
@@ -250,20 +255,12 @@ module.exports = class VimMotionsPlugin {
               "highlightActiveLine",
             ].includes(key)
           ) {
-            // Update styles first
             this.addStyles();
-
-            // Then update each editor instance
             this.aceEditors.forEach(({ editor }) => {
               this.applyEditorSettings(editor);
-
-              // Force a resize to recalculate layout with new font size
               editor.resize(true);
-
-              // Trigger height recalculation if font size changed
               if (key === "fontSize") {
                 editor.renderer.updateFull(true);
-                // Manually trigger the height update
                 const content = editor.getValue();
                 editor.setValue(content + " ", -1);
                 setTimeout(() => {
@@ -290,7 +287,6 @@ module.exports = class VimMotionsPlugin {
         return React.createElement(
           "div",
           null,
-          // Font Size
           React.createElement(
             SettingItem,
             {
@@ -314,13 +310,9 @@ module.exports = class VimMotionsPlugin {
                   onChange: (e) =>
                     updateConfig("fontSize", parseInt(e.target.value) || 14),
                   className: "inputDefault-3FGxgL input-2g-os5",
-                  style: {
-                    width: "100%",
-                  },
+                  style: { width: "100%" },
                 })
           ),
-
-          // Font Family
           React.createElement(
             SettingItem,
             {
@@ -341,13 +333,9 @@ module.exports = class VimMotionsPlugin {
                   onChange: (e) =>
                     updateConfig("fontFamily", e.target.value || "Consolas"),
                   className: "inputDefault-3FGxgL input-2g-os5",
-                  style: {
-                    width: "100%",
-                  },
+                  style: { width: "100%" },
                 })
           ),
-
-          // Font Color
           React.createElement(
             SettingItem,
             {
@@ -368,8 +356,6 @@ module.exports = class VimMotionsPlugin {
               },
             })
           ),
-
-          // Background Color
           React.createElement(
             SettingItem,
             {
@@ -390,8 +376,6 @@ module.exports = class VimMotionsPlugin {
               },
             })
           ),
-
-          // Cursor Color
           React.createElement(
             SettingItem,
             {
@@ -412,8 +396,6 @@ module.exports = class VimMotionsPlugin {
               },
             })
           ),
-
-          // Highlight Active Line
           React.createElement(
             SettingItem,
             {
@@ -423,11 +405,9 @@ module.exports = class VimMotionsPlugin {
             },
             React.createElement(SwitchInput, {
               value: config.highlightActiveLine,
-              onChange: (value) => updateConfig("highlightActiveLine", value),
+              onChange: (v) => updateConfig("highlightActiveLine", v),
             })
           ),
-
-          // Send in Insert Mode
           React.createElement(
             SettingItem,
             {
@@ -437,11 +417,9 @@ module.exports = class VimMotionsPlugin {
             },
             React.createElement(SwitchInput, {
               value: config.sendInInsertMode,
-              onChange: (value) => updateConfig("sendInInsertMode", value),
+              onChange: (v) => updateConfig("sendInInsertMode", v),
             })
           ),
-
-          // Send in Normal Mode
           React.createElement(
             SettingItem,
             {
@@ -451,11 +429,9 @@ module.exports = class VimMotionsPlugin {
             },
             React.createElement(SwitchInput, {
               value: config.sendInNormalMode,
-              onChange: (value) => updateConfig("sendInNormalMode", value),
+              onChange: (v) => updateConfig("sendInNormalMode", v),
             })
           ),
-
-          // Debug Mode
           React.createElement(
             SettingItem,
             {
@@ -465,11 +441,10 @@ module.exports = class VimMotionsPlugin {
             },
             React.createElement(SwitchInput, {
               value: config.debugMode,
-              onChange: (value) => updateConfig("debugMode", value),
+              onChange: (v) => updateConfig("debugMode", v),
             })
           ),
-
-          // Custom Key Bindings Section
+          // Custom mappings UI unchanged...
           React.createElement(
             "div",
             {
@@ -502,8 +477,6 @@ module.exports = class VimMotionsPlugin {
               },
               "Define custom Vim key mappings (e.g., map 'j' to 'gj' in normal mode)"
             ),
-
-            // List of existing mappings
             customMappings.length > 0 &&
               React.createElement(
                 "div",
@@ -557,12 +530,9 @@ module.exports = class VimMotionsPlugin {
                           setCustomMappings(newMappings);
                           this.customMappings = newMappings;
                           this.saveConfig();
-
-                          // Re-apply mappings to all editors
-                          this.aceEditors.forEach(({ editor }) => {
-                            this.applyVimMappings(editor);
-                          });
-
+                          this.aceEditors.forEach(({ editor }) =>
+                            this.applyVimMappings(editor)
+                          );
                           BdApi.UI.showToast("Key mapping removed", {
                             type: "success",
                           });
@@ -582,8 +552,6 @@ module.exports = class VimMotionsPlugin {
                   )
                 )
               ),
-
-            // Add new mapping form
             React.createElement(
               "div",
               {
@@ -625,7 +593,7 @@ module.exports = class VimMotionsPlugin {
                     ? React.createElement(TextInput, {
                         value: newMappingKeys,
                         placeholder: "j",
-                        onChange: (value) => setNewMappingKeys(value),
+                        onChange: (v) => setNewMappingKeys(v),
                       })
                     : React.createElement("input", {
                         type: "text",
@@ -633,9 +601,7 @@ module.exports = class VimMotionsPlugin {
                         onChange: (e) => setNewMappingKeys(e.target.value),
                         placeholder: "j",
                         className: "inputDefault-3FGxgL input-2g-os5",
-                        style: {
-                          width: "100%",
-                        },
+                        style: { width: "100%" },
                       })
                 ),
                 React.createElement(
@@ -657,7 +623,7 @@ module.exports = class VimMotionsPlugin {
                     ? React.createElement(TextInput, {
                         value: newMappingAction,
                         placeholder: "gj",
-                        onChange: (value) => setNewMappingAction(value),
+                        onChange: (v) => setNewMappingAction(v),
                       })
                     : React.createElement("input", {
                         type: "text",
@@ -665,9 +631,7 @@ module.exports = class VimMotionsPlugin {
                         onChange: (e) => setNewMappingAction(e.target.value),
                         placeholder: "gj",
                         className: "inputDefault-3FGxgL input-2g-os5",
-                        style: {
-                          width: "100%",
-                        },
+                        style: { width: "100%" },
                       })
                 ),
                 React.createElement(
@@ -714,9 +678,7 @@ module.exports = class VimMotionsPlugin {
                     if (!newMappingKeys.trim() || !newMappingAction.trim()) {
                       BdApi.UI.showToast(
                         "Please enter both 'from' and 'to' keys",
-                        {
-                          type: "error",
-                        }
+                        { type: "error" }
                       );
                       return;
                     }
@@ -729,12 +691,9 @@ module.exports = class VimMotionsPlugin {
                     setCustomMappings(newMappings);
                     this.customMappings = newMappings;
                     this.saveConfig();
-
-                    // Re-apply mappings to all editors
-                    this.aceEditors.forEach(({ editor }) => {
-                      this.applyVimMappings(editor);
-                    });
-
+                    this.aceEditors.forEach(({ editor }) =>
+                      this.applyVimMappings(editor)
+                    );
                     setNewMappingKeys("");
                     setNewMappingAction("");
                     setNewMappingTimeout("normal");
@@ -757,8 +716,6 @@ module.exports = class VimMotionsPlugin {
               )
             )
           ),
-
-          // Reset to Defaults Button
           React.createElement(
             "div",
             {
@@ -778,14 +735,11 @@ module.exports = class VimMotionsPlugin {
                   setConfig(this.defaultConfig);
                   this.config = this.defaultConfig;
                   this.saveConfig();
-
-                  // Re-apply settings to all active editors
                   this.addStyles();
                   this.aceEditors.forEach(({ editor }) => {
                     this.applyEditorSettings(editor);
                     editor.resize(true);
                   });
-
                   BdApi.UI.showToast("Settings reset to defaults", {
                     type: "success",
                   });
@@ -819,10 +773,7 @@ module.exports = class VimMotionsPlugin {
     }
   }
 
-  // ============================================================================
-  // Styles
-  // ============================================================================
-
+  // Styles (unchanged)
   addStyles() {
     const fontSize = this.config?.fontSize || this.defaultConfig.fontSize;
     const fontFamily = this.config?.fontFamily || this.defaultConfig.fontFamily;
@@ -832,7 +783,6 @@ module.exports = class VimMotionsPlugin {
     const cursorColor =
       this.config?.cursorColor || this.defaultConfig.cursorColor;
 
-    // Convert hex cursor color to rgba with opacity for block cursor
     const hexToRgba = (hex, alpha) => {
       const r = parseInt(hex.slice(1, 3), 16);
       const g = parseInt(hex.slice(3, 5), 16);
@@ -841,144 +791,39 @@ module.exports = class VimMotionsPlugin {
     };
     const cursorColorTransparent = hexToRgba(cursorColor, 0.8);
 
-    // Remove old styles first to ensure clean update
     BdApi.DOM.removeStyle("VimMotions");
 
     BdApi.DOM.addStyle(
       "VimMotions",
       `
-      /* Hide original Discord inputs when Ace is active */
-      .vim-ace-wrapper {
-        position: relative;
-        width: 100%;
-        min-height: 44px;
-        overflow: visible;
-      }
-      
-      .vim-ace-editor {
-        width: 100% !important;
-        min-height: 44px;
-        position: relative;
-      }
-      
-      .vim-ace-editor .ace_editor {
-        font-family: '${fontFamily}', monospace !important;
-        font-size: ${fontSize}px !important;
-        color: ${fontColor} !important;
-        background-color: ${backgroundColor} !important;
-        width: 100% !important;
-      }
-      
-      .vim-ace-editor .ace_scroller {
-        overflow-y: auto !important;
-        overflow-x: hidden !important;
-      }
-      
-      /* Hide scrollbars but keep scroll functionality */
-      .vim-ace-editor .ace_scrollbar {
-        display: none !important;
-      }
-      
-      .vim-ace-editor .ace_scrollbar-v,
-      .vim-ace-editor .ace_scrollbar-h {
-        display: none !important;
-      }
-      
-      /* Hide scrollbar for webkit browsers */
-      .vim-ace-editor .ace_scroller::-webkit-scrollbar {
-        display: none;
-        width: 0;
-        height: 0;
-      }
-      
-      /* Override background color for all themes to match custom setting */
-      .vim-ace-editor .ace_editor,
-      .vim-ace-editor .ace_scroller,
-      .vim-ace-editor .ace_content {
-        background: ${backgroundColor} !important;
-        background-color: ${backgroundColor} !important;
-      }
-      
-      /* Add top padding to center text and cursor vertically */
-      .vim-ace-editor .ace_content {
-        transform: translateY(10px) !important;
-      }
-      
-      /* Override text color to match custom setting - use very specific selectors */
-      .vim-ace-editor .ace_line,
-      .vim-ace-editor .ace_line > *,
-      .vim-ace-editor .ace_line span {
-        color: ${fontColor} !important;
-      }
-      
-      /* Force text color on all text tokens */
-      .vim-ace-editor .ace_text-layer .ace_line,
-      .vim-ace-editor .ace_text-layer .ace_line span {
-        color: ${fontColor} !important;
-      }
-      
-      /* Cursor color - proper Ace Editor way using CSS variables */
-      .vim-ace-editor .ace_cursor-layer .ace_cursor {
-        border-color: ${cursorColor};
-      }
-      
-      /* Cursor styles for Vim insert mode (thin line) */
-      .vim-ace-editor.vim-insert-mode .ace_cursor-layer .ace_cursor {
-        border-left-width: 2px;
-        border-left-color: ${cursorColor};
-      }
-      
-      /* Cursor styles for Vim normal/visual mode (block) */
-      .vim-ace-editor.vim-normal-mode .ace_cursor-layer .ace_cursor,
-      .vim-ace-editor.vim-visual-mode .ace_cursor-layer .ace_cursor {
-        background-color: ${cursorColorTransparent} !important;
-      }
-      
-      /* Make text under cursor fully opaque */
-      .vim-ace-editor.vim-normal-mode .ace_cursor-layer .ace_cursor.ace_overwrite-cursors,
-      .vim-ace-editor.vim-visual-mode .ace_cursor-layer .ace_cursor.ace_overwrite-cursors {
-        color: ${fontColor} !important;
-        opacity: 1 !important;
-      }
-      
-      /* Ensure the text content under block cursor is visible */
-      .vim-ace-editor.vim-normal-mode .ace_text-layer,
-      .vim-ace-editor.vim-visual-mode .ace_text-layer {
-        z-index: 2 !important;
-      }
-      
-      .vim-ace-editor.vim-normal-mode .ace_cursor-layer,
-      .vim-ace-editor.vim-visual-mode .ace_cursor-layer {
-        z-index: 1 !important;
-      }
-      
-      /* Ensure cursor layer respects opacity */
-      .vim-ace-editor.vim-normal-mode .ace_cursor-layer,
-      .vim-ace-editor.vim-visual-mode .ace_cursor-layer {
-        opacity: 1;
-      }
-      
-      /* Ensure background color is applied to gutter area too */
-      .vim-ace-editor .ace_gutter {
-        background: ${backgroundColor} !important;
-        color: ${fontColor} !important;
-      }
-      
-      /* Hide Discord's original input when replaced */
-      .vim-hidden-input {
-        display: none !important;
-      }
+      .vim-ace-wrapper { position: relative; width: 100%; min-height: 44px; overflow: visible; }
+      .vim-ace-editor { width: 100% !important; min-height: 44px; position: relative; }
+      .vim-ace-editor .ace_editor { font-family: '${fontFamily}', monospace !important; font-size: ${fontSize}px !important; color: ${fontColor} !important; background-color: ${backgroundColor} !important; width: 100% !important; }
+      .vim-ace-editor .ace_scroller { overflow-y: auto !important; overflow-x: hidden !important; }
+      .vim-ace-editor .ace_scrollbar, .vim-ace-editor .ace_scrollbar-v, .vim-ace-editor .ace_scrollbar-h { display: none !important; }
+      .vim-ace-editor .ace_scroller::-webkit-scrollbar { display: none; width: 0; height: 0; }
+      .vim-ace-editor .ace_editor, .vim-ace-editor .ace_scroller, .vim-ace-editor .ace_content { background: ${backgroundColor} !important; background-color: ${backgroundColor} !important; }
+      .vim-ace-editor .ace_content { transform: translateY(10px) !important; }
+      .vim-ace-editor .ace_line, .vim-ace-editor .ace_line > *, .vim-ace-editor .ace_line span { color: ${fontColor} !important; }
+      .vim-ace-editor .ace_text-layer .ace_line, .vim-ace-editor .ace_text-layer .ace_line span { color: ${fontColor} !important; }
+      .vim-ace-editor .ace_cursor-layer .ace_cursor { border-color: ${cursorColor}; }
+      .vim-ace-editor.vim-insert-mode .ace_cursor-layer .ace_cursor { border-left-width: 2px; border-left-color: ${cursorColor}; }
+      .vim-ace-editor.vim-normal-mode .ace_cursor-layer .ace_cursor, .vim-ace-editor.vim-visual-mode .ace_cursor-layer .ace_cursor { background-color: ${cursorColorTransparent} !important; }
+      .vim-ace-editor.vim-normal-mode .ace_cursor-layer .ace_cursor.ace_overwrite-cursors, .vim-ace-editor.vim-visual-mode .ace_cursor-layer .ace_cursor.ace_overwrite-cursors { color: ${fontColor} !important; opacity: 1 !important; }
+      .vim-ace-editor.vim-normal-mode .ace_text-layer, .vim-ace-editor.vim-visual-mode .ace_text-layer { z-index: 2 !important; }
+      .vim-ace-editor.vim-normal-mode .ace_cursor-layer, .vim-ace-editor.vim-visual-mode .ace_cursor-layer { z-index: 1 !important; opacity: 1; }
+      .vim-ace-editor .ace_gutter { background: ${backgroundColor} !important; color: ${fontColor} !important; }
+      .vim-hidden-input { display: none !important; }
     `
     );
   }
-  // ============================================================================
+
   // Input Observation & Ace Editor Management
-  // ============================================================================
 
   startObserving() {
     this.findAndAttachToInputs();
 
-    this.observer = new MutationObserver((mutations) => {
+    this.observer = new MutationObserver(() => {
       this.findAndAttachToInputs();
     });
 
@@ -989,7 +834,6 @@ module.exports = class VimMotionsPlugin {
   }
 
   findAndAttachToInputs(root = document) {
-    // Focus on Discord's main chat input
     const selectors = [
       '[data-slate-editor="true"]',
       'div[role="textbox"][contenteditable="true"]',
@@ -1008,13 +852,21 @@ module.exports = class VimMotionsPlugin {
   }
 
   shouldAttachToInput(input) {
-    // Only attach to Discord's main chat input area
-    // Avoid attaching to every contenteditable element
     const parent =
       input.closest('[class*="channelTextArea"]') ||
       input.closest('[class*="chatContent"]');
     return parent !== null;
   }
+
+  getCurrentChannelId() {
+    const channelId = this.dcModules.SelectedChannelStore.getChannelId();
+    if (!channelId) {
+      this.log("No channel ID found from SelectedChannelStore", "error");
+    }
+    return channelId;
+  }
+
+  // No draft saving at all (function removed)
 
   attachAceEditor(originalInput) {
     if (!this.aceLoaded || !window.ace) {
@@ -1024,35 +876,71 @@ module.exports = class VimMotionsPlugin {
 
     try {
       const { editor, editorDiv } = this.createEditor(originalInput);
-      const discordModules = this.getDiscordModules();
 
-      this.loadInitialContent(editor, originalInput, discordModules);
+      this.loadInitialContent(editor, originalInput);
+
+      const isEditMode = this.isEditMode(originalInput);
+      this.log(`Attaching editor. Is edit mode: ${isEditMode}`);
 
       this.setupVimMode(editor, editorDiv, originalInput);
 
-      this.setupContentSync(editor, originalInput);
-      this.setupEmojiDetection(editor, originalInput, discordModules);
+      // Ensure editor is properly focused and ready for input
+      // This is especially important when switching from edit mode back to main chatbox
+      // We need to wait longer to ensure vimMode is initialized (setupVimMode uses 50ms + 100ms = 150ms total)
+      setTimeout(() => {
+        this.log("Running delayed focus/insert mode setup at 200ms");
+        const editorData = this.aceEditors.get(originalInput);
+        this.log(
+          `Editor data exists: ${!!editorData}, has vimMode: ${!!editorData?.vimMode}`
+        );
 
-      // Save draft only when switching editors
-      editor.on("blur", () => {
-        const content = editor.getValue();
-        const channelId = this.getCurrentChannelId();
-        if (channelId) {
-          this.drafts[channelId] = content;
-          this.log(
-            `Saved in-memory draft for channel ${channelId} on blur: "${content}"`
-          );
+        if (editorData && editorData.editor && editorData.textarea) {
+          try {
+            editorData.editor.focus();
+            editorData.textarea.focus();
+            // Force editor to recognize it's ready for input
+            editorData.editor.renderer.updateFull(true);
+
+            // Force insert mode for main chatbox (not edit mode)
+            if (!isEditMode) {
+              if (editorData.vimMode) {
+                const vim = editorData.vimMode.constructor.Vim;
+                if (vim) {
+                  vim.handleKey(editorData.vimMode, "i", null);
+                  this.log(
+                    `Forced insert mode for main chatbox after attach. Current mode: ${this.currentMode}`
+                  );
+                } else {
+                  this.log("Vim constructor not found", "warn");
+                }
+              } else {
+                this.log("vimMode not available yet in editorData", "warn");
+              }
+            } else {
+              this.log("Is edit mode, not forcing insert mode");
+            }
+
+            this.log("Editor focused and initialized after attach");
+          } catch (e) {
+            this.log(
+              `Error focusing editor after attach: ${e.message}`,
+              "warn"
+            );
+          }
+        } else {
+          this.log("Editor data not found or incomplete", "warn");
         }
-      });
+      }, 200);
 
-      this.log("Ace editor attached");
+      // no draft/emoji sync here
+
+      // keep a stored keydown/blur handling in create/setup
     } catch (e) {
       this.log(`Failed to attach Ace editor: ${e.message}`, "error");
     }
   }
 
   createEditor(originalInput) {
-    // Create wrapper for Ace editor
     const wrapper = document.createElement("div");
     wrapper.className = "vim-ace-wrapper";
 
@@ -1060,102 +948,91 @@ module.exports = class VimMotionsPlugin {
     editorDiv.className = "vim-ace-editor";
     wrapper.appendChild(editorDiv);
 
-    // Insert wrapper before original input
+    // Insert wrapper and hide original input
     originalInput.parentNode.insertBefore(wrapper, originalInput);
     originalInput.classList.add("vim-hidden-input");
 
-    // Initialize Ace editor
+    // Initialize Ace
     const editor = window.ace.edit(editorDiv);
     this.applyEditorSettings(editor);
 
-    // Get placeholder text from Discord's original input
+    // Placeholder from Discord DOM
     const placeholderText = this.getPlaceholderText(originalInput);
-    if (placeholderText) {
-      this.setPlaceholder(editor, placeholderText);
+    if (placeholderText) this.setPlaceholder(editor, placeholderText);
+
+    // Get Ace's hidden textarea (so we can focus/remove listeners reliably)
+    const textarea =
+      editor.textInput && typeof editor.textInput.getElement === "function"
+        ? editor.textInput.getElement()
+        : null;
+    if (textarea) {
+      textarea.tabIndex = 0;
+      textarea.style.cssText =
+        "opacity:0;position:absolute;z-index:0;height:100%;width:100%;left:0;top:0;outline:none";
+      textarea.removeAttribute("readonly");
+      textarea.removeAttribute("disabled");
     }
 
-    // Configure textarea for input
-    const textarea = editor.textInput.getElement();
-    textarea.tabIndex = 0;
-    textarea.style.cssText =
-      "opacity:0;position:absolute;z-index:0;height:100%;width:100%;left:0;top:0";
-    textarea.removeAttribute("readonly");
-    textarea.removeAttribute("disabled");
-
-    // Store reference
-    this.aceEditors.set(originalInput, { editor, wrapper });
+    // Store references for cleanup and later focusing
+    this.aceEditors.set(originalInput, {
+      editor,
+      wrapper,
+      textarea,
+      editorDiv,
+      // vimMode will be attached later in setupVimMode
+      vimMode: null,
+    });
     this.activeInputs.add(originalInput);
 
     return { editor, wrapper, editorDiv };
   }
 
-  getDiscordModules() {
-    return {
-      SelectedChannelStore: BdApi.Webpack.getModule(
-        BdApi.Webpack.Filters.byProps("getChannelId", "getVoiceChannelId")
-      ),
-      MessageActions: BdApi.Webpack.getModule(
-        (m) => m.sendMessage && m.receiveMessage
-      ),
-      MessageStore: BdApi.Webpack.getModule(
-        BdApi.Webpack.Filters.byKeys("receiveMessage", "editMessage")
-      ),
-      DraftActions: BdApi.Webpack.getModule(
-        (m) => m.changeDraft || m.saveDraft || m.clearDraft
-      ),
-      DraftStore: BdApi.Webpack.getModule(
-        (m) => m.getDraft && m.getRecentlyEditedDrafts
-      ),
-    };
+  isEditMode(originalInput) {
+    const container = originalInput.closest('[class*="channelTextArea"]');
+    if (!container) return false;
+    const parent = container.parentElement;
+    if (!parent) return false;
+    const operations = parent.querySelector('[class*="operations"]');
+    return operations !== null;
   }
 
-  // Replace DraftStore-based draft handling with local storage
-  loadInitialDraft(editor) {
-    const channelId = this.getCurrentChannelId();
-    if (!channelId) {
-      this.log("Cannot load draft: No channel ID available", "error");
+  loadInitialContent(editor, originalInput) {
+    // Only populate when in edit mode
+    if (!this.isEditMode(originalInput)) {
+      this.log("Not in edit mode, skipping initial content load");
       return;
     }
 
-    const draft = this.drafts[channelId];
+    // Extract lines correctly from Discord’s editable DOM
+    let existingContent = "";
 
-    if (draft && draft.trim()) {
-      editor.setValue(draft, -1);
-      editor.navigateFileEnd();
-      this.log(`Loaded in-memory draft for channel ${channelId}: "${draft}"`);
-    } else {
-      this.log(`No in-memory draft found for channel ${channelId}`);
+    try {
+      const lineNodes = originalInput.querySelectorAll(
+        "div[data-slate-node='element']"
+      );
+      if (lineNodes.length > 0) {
+        existingContent = Array.from(lineNodes)
+          .map((div) => div.innerText || div.textContent || "")
+          .join("\n");
+      } else {
+        // Fallback if structure changes or not found
+        existingContent =
+          originalInput.innerText || originalInput.textContent || "";
+      }
+    } catch (e) {
+      existingContent =
+        originalInput.innerText || originalInput.textContent || "";
     }
-  }
 
-  syncToDiscordInput(originalInput, content) {
-    // Update Discord's input to trigger their state management
-    originalInput.textContent = content;
-    this.log(`Synced to Discord input: "${content}"`);
-
-    // Dispatch input event to notify Discord
-    const inputEvent = new Event("input", { bubbles: true, cancelable: true });
-    originalInput.dispatchEvent(inputEvent);
-  }
-
-  getCurrentChannelId() {
-    const { SelectedChannelStore } = this.getDiscordModules();
-    return SelectedChannelStore?.getChannelId() || null;
-  }
-
-  loadInitialContent(editor, originalInput, discordModules) {
-    // First try to get content from the original Discord input (for edit mode)
-    const existingContent =
-      originalInput.textContent || originalInput.innerText || "";
-    if (existingContent.trim()) {
+    if (existingContent && existingContent.trim()) {
       editor.setValue(existingContent, -1);
       editor.navigateFileEnd();
-      this.log(`Loaded existing content: "${existingContent}"`);
-      return;
+      this.log(
+        `Loaded existing content with newlines preserved:\n${existingContent}`
+      );
+    } else {
+      this.log("No existing content found for edit mode.");
     }
-
-    // If no existing content, try loading draft
-    this.loadInitialDraft(editor);
   }
 
   setupVimMode(editor, editorDiv, originalInput) {
@@ -1163,12 +1040,19 @@ module.exports = class VimMotionsPlugin {
     const textarea = editor.textInput.getElement();
     const keySequences = this.initializeKeySequences();
 
-    // Setup keyboard handling
-    textarea.addEventListener("keydown", (e) =>
-      this.handleKeydown(e, editor, originalInput, vimMode, keySequences)
-    );
+    // Shift+Enter for new line
+    editor.commands.addCommand({
+      name: "newLine",
+      bindKey: { win: "Shift-Enter", mac: "Shift-Enter" },
+      exec: (ed) => ed.insert("\n"),
+    });
 
-    // Enable Vim keybindings after delay
+    // Setup keyboard handling and store listener so we can remove it on destroy
+    const keydownListener = (e) =>
+      this.handleKeydown(e, editor, originalInput, vimMode, keySequences);
+    textarea.addEventListener("keydown", keydownListener);
+
+    // Enable Vim keybindings after a short delay
     setTimeout(() => {
       this.log("Setting Vim keyboard handler...");
       editor.setKeyboardHandler("ace/keyboard/vim");
@@ -1179,10 +1063,63 @@ module.exports = class VimMotionsPlugin {
         this.applyVimMappings(editor);
       }
 
-      // Click handler for focus and insert mode
-      editorDiv.addEventListener("click", () =>
-        this.handleEditorClick(editor, textarea, vimMode)
-      );
+      const clickListener = () =>
+        this.handleEditorClick(editor, textarea, vimMode);
+      editorDiv.addEventListener("click", clickListener);
+
+      // Add focus listener to detect when returning to this editor
+      const focusListener = () => {
+        if (this.isEditMode(originalInput)) return;
+
+        if (this.currentMode === "insert") return;
+
+        const editorData = this.aceEditors.get(originalInput);
+        if (!editorData || !editorData.vimMode) return;
+
+        const currentVimMode = editorData.vimMode;
+        const vim = currentVimMode.constructor?.Vim;
+        if (!vim) return;
+
+        try {
+          this.justEnteredInsertMode = false;
+
+          // Try direct Vim state change first
+          if (currentVimMode.state?.vim) {
+            currentVimMode.state.vim.insertMode = true;
+            this.currentMode = "insert";
+
+            const editorDiv = editor.container.closest(".vim-ace-editor");
+            if (editorDiv) {
+              editorDiv.classList.remove("vim-normal-mode", "vim-visual-mode");
+              editorDiv.classList.add("vim-insert-mode");
+            }
+
+            setTimeout(() => (this.justEnteredInsertMode = false), 60);
+            return;
+          }
+
+          // Fallback: simulate pressing "i"
+          vim.handleKey(currentVimMode, "i", null);
+          setTimeout(() => (this.justEnteredInsertMode = false), 60);
+        } catch (e) {
+          // ignore all errors silently
+        }
+      };
+
+      editorDiv.addEventListener("focus", focusListener, true);
+      editorDiv.addEventListener("click", focusListener);
+      textarea.addEventListener("focus", focusListener);
+
+      // store listeners and vimMode for cleanup and later access
+      const prev = this.aceEditors.get(originalInput) || {};
+      this.aceEditors.set(originalInput, {
+        ...prev,
+        keydownListener,
+        clickListener,
+        focusListener,
+        editorDiv,
+        vimMode, // Store vimMode so we can access it later
+      });
     }, 50);
 
     return vimMode;
@@ -1202,26 +1139,29 @@ module.exports = class VimMotionsPlugin {
           return;
         }
 
-        // Separate single-key mappings from multi-key sequences
         const singleKeyMappings = [];
         const sequenceMappings = [];
 
         this.customMappings.forEach((mapping) => {
-          // Check if it's a multi-character sequence (like "jk") vs special key (like "<C-e>")
-          if (mapping.from.length > 1 && !mapping.from.startsWith("<")) {
+          if (!mapping || !mapping.from) return;
+          if (mapping.from.length > 1 && !mapping.from.startsWith("<"))
             sequenceMappings.push(mapping);
-          } else {
-            singleKeyMappings.push(mapping);
-          }
+          else singleKeyMappings.push(mapping);
         });
 
-        // Apply single-key mappings through Vim.map
         singleKeyMappings.forEach((mapping) => {
           try {
-            Vim.map(mapping.from, mapping.to, mapping.mode);
-            this.log(
-              `Applied Vim mapping: ${mapping.from} → ${mapping.to} (${mapping.mode})`
-            );
+            if (typeof Vim.map === "function") {
+              Vim.map(mapping.from, mapping.to, mapping.mode);
+              this.log(
+                `Applied Vim mapping: ${mapping.from} → ${mapping.to} (${mapping.mode})`
+              );
+            } else {
+              this.log(
+                `Vim.map not available; cannot apply mapping ${mapping.from}`,
+                "warn"
+              );
+            }
           } catch (e) {
             this.log(
               `Error applying mapping ${mapping.from}: ${e.message}`,
@@ -1230,7 +1170,6 @@ module.exports = class VimMotionsPlugin {
           }
         });
 
-        this.log(`Applied ${singleKeyMappings.length} single-key Vim mappings`);
         if (sequenceMappings.length > 0) {
           this.log(
             `${sequenceMappings.length} sequence mappings require key sequence detection`
@@ -1243,10 +1182,8 @@ module.exports = class VimMotionsPlugin {
   }
 
   initializeKeySequences() {
-    // Get multi-key sequences from customMappings
     const sequences = new Map();
     this.customMappings.forEach((mapping) => {
-      // Only process multi-character sequences (not special keys like <C-e>)
       if (mapping.from.length > 1 && !mapping.from.startsWith("<")) {
         sequences.set(mapping.from, {
           buffer: [],
@@ -1261,20 +1198,20 @@ module.exports = class VimMotionsPlugin {
   }
 
   handleKeydown(e, editor, originalInput, vimMode, keySequences) {
-    // Handle Enter key based on mode
+    // Guard: editor might have been destroyed
+    if (!editor || editor._destroyed) return;
+
+    if (e.isComposing || e.key === "Process") return;
+
     if (e.key === "Enter" && !e.shiftKey) {
       this.handleEnterKey(e, editor, originalInput, vimMode);
       return;
     }
 
-    // Check for multi-key sequences in insert mode
     if (this.currentMode === "insert" && e.key.length === 1 && keySequences) {
-      if (this.handleKeySequence(e, editor, vimMode, keySequences)) {
-        return;
-      }
+      if (this.handleKeySequence(e, editor, vimMode, keySequences)) return;
     }
 
-    // Vim command keys that trigger mode changes
     const vimModeChangeKeys = [
       "i",
       "a",
@@ -1289,12 +1226,9 @@ module.exports = class VimMotionsPlugin {
       "r",
       "R",
     ];
-
-    // Skip insertion if we just entered insert mode via a command
     const shouldSkipInsertion =
       this.justEnteredInsertMode && vimModeChangeKeys.includes(e.key);
 
-    // Manual character insertion in insert mode only
     if (
       !shouldSkipInsertion &&
       this.currentMode === "insert" &&
@@ -1305,12 +1239,13 @@ module.exports = class VimMotionsPlugin {
     ) {
       e.preventDefault();
       e.stopPropagation();
-
-      editor.insert(e.key);
-
-      this.log(`Manual insert (insert mode): ${e.key}`);
+      const insertSuccess = editor.insert(e.key);
+      this.log(
+        `Manual insert (insert mode): ${e.key}, Edit mode: ${this.isEditMode(
+          originalInput
+        )}, Insert success: ${insertSuccess !== false}`
+      );
     } else {
-      // Let Vim handle the keys in normal/visual mode or for vim commands
       this.log(`Vim handling (${this.currentMode} mode): ${e.key}`);
     }
   }
@@ -1320,36 +1255,19 @@ module.exports = class VimMotionsPlugin {
     let matchedSequence = null;
 
     for (const [keys, sequence] of keySequences.entries()) {
-      // Only check sequences for the current mode
       if (sequence.mode !== this.currentMode) continue;
-
       const timeDiff = now - sequence.lastTime;
-
-      // Reset buffer if too much time has passed
-      if (timeDiff >= sequence.timeout) {
-        sequence.buffer = [];
-      }
-
-      // Add current key to buffer
+      if (timeDiff >= sequence.timeout) sequence.buffer = [];
       sequence.buffer.push(e.key);
       sequence.lastTime = now;
-
       const bufferStr = sequence.buffer.join("");
-
-      // Check for exact match
       if (bufferStr === keys) {
         matchedSequence = { keys, sequence };
         break;
       }
-
-      // Check if buffer is a prefix of the target sequence
       if (!keys.startsWith(bufferStr)) {
-        // Not a match, reset to just current key
         sequence.buffer = [e.key];
-        // Check if single key could start a sequence
-        if (!keys.startsWith(e.key)) {
-          sequence.buffer = [];
-        }
+        if (!keys.startsWith(e.key)) sequence.buffer = [];
       }
     }
 
@@ -1357,13 +1275,8 @@ module.exports = class VimMotionsPlugin {
       const { keys, sequence } = matchedSequence;
       e.preventDefault();
       e.stopPropagation();
-
-      // Remove the typed characters from the editor
-      // Note: The current key hasn't been inserted yet (we prevented it),
-      // so we only need to remove (keys.length - 1) characters
       const pos = editor.getCursorPosition();
       const charsToRemove = keys.length - 1;
-
       if (charsToRemove > 0) {
         const startCol = Math.max(0, pos.column - charsToRemove);
         editor.session.remove({
@@ -1372,7 +1285,6 @@ module.exports = class VimMotionsPlugin {
         });
       }
 
-      // Execute the action
       if (sequence.action === "<Esc>" && vimMode) {
         const vim = vimMode.constructor.Vim;
         if (vim) {
@@ -1381,32 +1293,23 @@ module.exports = class VimMotionsPlugin {
         }
       }
 
-      // Clear all buffers after successful match
       for (const seq of keySequences.values()) {
         seq.buffer = [];
         seq.lastTime = 0;
       }
-
       return true;
     }
 
-    // Check if this could be the start of a sequence
     for (const [keys, sequence] of keySequences.entries()) {
       if (sequence.mode !== this.currentMode) continue;
-
       const bufferStr = sequence.buffer.join("");
-      if (keys.startsWith(bufferStr) && bufferStr.length > 0) {
-        // We have a potential sequence starting, don't let the default insert happen yet
-        // We'll handle insertion in shouldManuallyInsert if needed
-        return false;
-      }
+      if (keys.startsWith(bufferStr) && bufferStr.length > 0) return false;
     }
 
     return false;
   }
 
   handleEnterKey(e, editor, originalInput, vimMode) {
-    // Check if we're in edit mode by looking for the operations/cancel/save UI
     const isEditMode = this.isEditMode(originalInput);
 
     const shouldSendInInsert =
@@ -1415,7 +1318,6 @@ module.exports = class VimMotionsPlugin {
       this.config.sendInNormalMode && this.currentMode !== "insert";
 
     if (shouldSendInInsert || shouldSendInNormal) {
-      // Send message
       e.preventDefault();
       e.stopPropagation();
 
@@ -1427,164 +1329,93 @@ module.exports = class VimMotionsPlugin {
 
       if (isEditMode) {
         this.editMessage(content, e);
-
         this.log(`Enter in ${this.currentMode} mode: message edited`);
       } else {
         this.sendMessage(content);
-
         editor.setValue("", -1);
-
-        const vim = vimMode.constructor.Vim;
-        if (vim) vim.handleKey(vimMode, "i", null);
-
-        this.syncToDiscordInput(originalInput, "");
-
+        try {
+          const vim = vimMode.constructor.Vim;
+          if (vim) vim.handleKey(vimMode, "i", null);
+        } catch (e) {}
         this.log(`Enter in ${this.currentMode} mode: message sent`);
       }
     } else {
-      // Insert new line (default behavior in insert mode)
       this.log(`Enter in ${this.currentMode} mode: new line`);
     }
   }
 
   setupVimModeHandlers(vimMode, editor, textarea) {
+    if (!vimMode || !editor) return;
+
     vimMode.on("vim-mode-change", (data) => {
       const previousMode = this.currentMode;
       this.currentMode = data.mode;
       this.log(`Vim mode changed: ${data.mode}`);
 
-      // Track mode change from normal to insert - this means a command like 'a', 'i', 'o' was just used
       if (previousMode === "normal" && data.mode === "insert") {
         this.justEnteredInsertMode = true;
-        // Clear the flag after a short delay
         setTimeout(() => {
           this.justEnteredInsertMode = false;
         }, 50);
       }
 
-      // Update cursor style based on mode
       const editorDiv = editor.container.closest(".vim-ace-editor");
       if (editorDiv) {
-        // Remove all mode classes
         editorDiv.classList.remove(
           "vim-insert-mode",
           "vim-normal-mode",
           "vim-visual-mode"
         );
-
-        // Add current mode class
-        if (data.mode === "insert") {
-          editorDiv.classList.add("vim-insert-mode");
-        } else if (data.mode === "visual") {
+        if (data.mode === "insert") editorDiv.classList.add("vim-insert-mode");
+        else if (data.mode === "visual")
           editorDiv.classList.add("vim-visual-mode");
-        } else {
-          editorDiv.classList.add("vim-normal-mode");
-        }
+        else editorDiv.classList.add("vim-normal-mode");
       }
 
       if (this.onModeChange) this.onModeChange();
     });
 
     setTimeout(() => {
-      const vim = vimMode.constructor.Vim;
-      if (vim) {
-        vim.handleKey(vimMode, "i", null);
-        this.log("Switched to insert mode on initialization");
-        editor.focus();
-        textarea.focus();
-
-        // Set initial mode class
-        const editorDiv = editor.container.closest(".vim-ace-editor");
-        if (editorDiv) {
-          editorDiv.classList.add("vim-insert-mode");
+      try {
+        const vim = vimMode.constructor.Vim;
+        if (vim) {
+          vim.handleKey(vimMode, "i", null);
+          this.log("Switched to insert mode on initialization");
+          editor.focus();
+          textarea.focus();
+          // Ensure textarea is properly set up to receive input
+          if (textarea) {
+            textarea.removeAttribute("readonly");
+            textarea.removeAttribute("disabled");
+            textarea.tabIndex = 0;
+          }
+          const editorDiv = editor.container.closest(".vim-ace-editor");
+          if (editorDiv) editorDiv.classList.add("vim-insert-mode");
         }
+      } catch (e) {
+        this.log(`Error setting up initial insert mode: ${e.message}`, "warn");
       }
     }, 100);
   }
 
   handleEditorClick(editor, textarea, vimMode) {
-    editor.focus();
-    textarea.focus();
-    setTimeout(() => {
-      if (vimMode && this.currentMode !== "insert") {
-        const vim = vimMode.constructor.Vim;
-        if (vim) vim.handleKey(vimMode, "i", null);
+    try {
+      editor.focus();
+      textarea.focus();
+      // Ensure textarea is ready to receive input
+      if (textarea) {
+        textarea.removeAttribute("readonly");
+        textarea.removeAttribute("disabled");
       }
-    }, 10);
-  }
-
-  setupContentSync(editor, originalInput) {
-    let isSyncingFromDiscord = false;
-
-    // Sync editor changes to Discord's visible input
-    editor.session.on("change", () => {
-      if (isSyncingFromDiscord) return;
-      this.syncToDiscordInput(originalInput, editor.getValue());
-    });
-
-    // Shift+Enter for new line
-    editor.commands.addCommand({
-      name: "newLine",
-      bindKey: { win: "Shift-Enter", mac: "Shift-Enter" },
-      exec: (editor) => editor.insert("\n"),
-    });
-
-    // Store sync flag for emoji detection
-    this.aceEditors.get(originalInput).isSyncingFromDiscord = () =>
-      isSyncingFromDiscord;
-    this.aceEditors.get(originalInput).setSyncFlag = (value) =>
-      (isSyncingFromDiscord = value);
-  }
-
-  setupEmojiDetection(
-    editor,
-    originalInput,
-    { SelectedChannelStore, MessageActions, DraftActions, DraftStore }
-  ) {
-    if (!SelectedChannelStore || !MessageActions) {
-      this.log("Discord modules not found, emoji detection disabled", "warn");
-      return;
-    }
-
-    const editorData = this.aceEditors.get(originalInput);
-
-    const checkDraftStore = () => {
-      if (editorData.isSyncingFromDiscord()) return;
-
-      const channelId = SelectedChannelStore.getChannelId();
-      const currentDraft = DraftStore.getDraft(channelId, 0) || "";
-
-      if (currentDraft) {
-        editorData.setSyncFlag(true);
-
-        editor.insert(currentDraft);
-        this.log(`Inserted emoji: "${currentDraft}"`);
-
-        try {
-          DraftActions.clearDraft(channelId, 0);
-        } catch (e) {
-          this.log(`Error clearing draft: ${e.message}`);
+      setTimeout(() => {
+        if (vimMode && this.currentMode !== "insert") {
+          const vim = vimMode.constructor.Vim;
+          if (vim) vim.handleKey(vimMode, "i", null);
         }
-
-        editorData.setSyncFlag(false);
-      }
-    };
-
-    const inputObserver = new MutationObserver(checkDraftStore);
-    const pollInterval = setInterval(checkDraftStore, 100);
-
-    inputObserver.observe(originalInput, {
-      characterData: true,
-      childList: true,
-      subtree: true,
-    });
-
-    // Update stored editor data with cleanup references
-    this.aceEditors.set(originalInput, {
-      ...editorData,
-      observer: inputObserver,
-      pollInterval: pollInterval,
-    });
+      }, 10);
+    } catch (e) {
+      this.log(`Error handling editor click: ${e.message}`, "warn");
+    }
   }
 
   applyEditorSettings(editor) {
@@ -1595,153 +1426,96 @@ module.exports = class VimMotionsPlugin {
     const highlightActiveLine = this.config?.highlightActiveLine ?? false;
 
     editor.setOptions({
-      // Theme and appearance
-      theme: `ace/theme/dracula`, // Use a fixed dark theme that works well with Discord
+      theme: `ace/theme/dracula`,
       fontSize: fontSize,
       fontFamily: fontFamily,
-
-      // Display options
       showPrintMargin: false,
       highlightActiveLine: highlightActiveLine,
       showLineNumbers: false,
       showGutter: false,
       displayIndentGuides: false,
-
-      // Wrapping
       wrap: true,
-      indentedSoftWrap: false, // Prevent indentation on wrapped lines
-
-      // Scrolling
+      indentedSoftWrap: false,
       scrollPastEnd: 0,
       hScrollBarAlwaysVisible: false,
       vScrollBarAlwaysVisible: false,
-
-      // Behavior
       readOnly: false,
       highlightSelectedWord: false,
       enableBasicAutocompletion: true,
       enableLiveAutocompletion: false,
-
-      // Performance
       animatedScroll: false,
-
-      // Tab behavior
       useSoftTabs: true,
       tabSize: 2,
-
-      // Copy/paste
       copyWithEmptySelection: true,
     });
 
-    // Additional renderer settings
     editor.renderer.setShowGutter(false);
     editor.renderer.setScrollMargin(8, 8, 0, 0);
 
-    // Set cursor color properly using Ace's API
     const cursorColor = this.config?.cursorColor || "#ffffff";
     editor.renderer.$cursorLayer.config.cursorColor = cursorColor;
 
-    // Override theme colors with custom colors
-    // This must be done after the theme is loaded
     setTimeout(() => {
       const editorElement = editor.container;
-      if (editorElement) {
-        // Set custom CSS variables for colors
-        editorElement.style.setProperty("--ace-background", backgroundColor);
-        editorElement.style.setProperty("--ace-foreground", fontColor);
-        editorElement.style.setProperty("--ace-cursor-color", cursorColor);
+      if (!editorElement) return;
+      editorElement.style.setProperty("--ace-background", backgroundColor);
+      editorElement.style.setProperty("--ace-foreground", fontColor);
+      editorElement.style.setProperty("--ace-cursor-color", cursorColor);
 
-        // Force background and foreground colors
-        const styleElement = editorElement.querySelector(".ace_editor");
-        if (styleElement) {
-          styleElement.style.backgroundColor = backgroundColor;
-          styleElement.style.color = fontColor;
-        }
+      const styleElement = editorElement.querySelector(".ace_editor");
+      if (styleElement) {
+        styleElement.style.backgroundColor = backgroundColor;
+        styleElement.style.color = fontColor;
+      }
+      const contentElement = editorElement.querySelector(".ace_scroller");
+      if (contentElement)
+        contentElement.style.backgroundColor = backgroundColor;
 
-        const contentElement = editorElement.querySelector(".ace_scroller");
-        if (contentElement) {
-          contentElement.style.backgroundColor = backgroundColor;
-        }
-
-        // Force text color on all text lines
-        const textLayer = editorElement.querySelector(".ace_text-layer");
-        if (textLayer) {
-          textLayer.style.color = fontColor;
-          // Apply to all line elements
-          const lines = textLayer.querySelectorAll(".ace_line");
-          lines.forEach((line) => {
-            line.style.color = fontColor;
-            // Apply to all spans within lines
-            const spans = line.querySelectorAll("span");
-            spans.forEach((span) => {
-              span.style.color = fontColor;
-            });
-          });
-        }
+      const textLayer = editorElement.querySelector(".ace_text-layer");
+      if (textLayer) {
+        textLayer.style.color = fontColor;
+        const lines = textLayer.querySelectorAll(".ace_line");
+        lines.forEach((line) => {
+          line.style.color = fontColor;
+          const spans = line.querySelectorAll("span");
+          spans.forEach((span) => (span.style.color = fontColor));
+        });
       }
     }, 10);
 
-    // Function to update editor height based on content (including wrapped lines)
     const updateHeight = () => {
-      // Force layout update
-      editor.renderer.updateFull();
-
-      const lineHeight = editor.renderer.lineHeight || 20;
-
-      // Count screen rows (includes wrapped lines) instead of document lines
-      const screenRows = editor.session.getScreenLength();
-
-      // Determine if we have multiple lines (including wrapped)
-      const hasMultipleLines = screenRows > 1;
-
-      // Calculate actual content height including wrapped lines
-      const contentHeight = screenRows * lineHeight;
-      const topPadding = 10; // Top padding from translateY
-      const bottomPadding = hasMultipleLines ? 10 : 0; // Bottom padding only for multi-line
-      const totalPadding = topPadding + bottomPadding + 10; // 20 for comfort
-
-      const minHeight = 44;
-      const maxHeight = Math.floor(window.innerHeight * 0.5);
-
-      const newHeight = Math.max(
-        minHeight,
-        Math.min(contentHeight + totalPadding, maxHeight)
-      );
-
-      // Update container height
-      editor.container.style.height = `${newHeight}px`;
-
-      // Update bottom padding dynamically
-      const content = editor.container.querySelector(".ace_content");
-      if (content) {
-        content.style.paddingBottom = hasMultipleLines ? "10px" : "0px";
-      }
-
-      // Find and update Discord's parent containers
-      const discordTextArea = editor.container.closest('[class*="textArea"]');
-      if (discordTextArea) {
-        discordTextArea.style.height = `${newHeight}px`;
-      }
-
-      const channelTextArea = editor.container.closest(
-        '[class*="channelTextArea"]'
-      );
-      if (channelTextArea) {
-        // Let the channel text area adjust naturally
-        channelTextArea.style.minHeight = `${newHeight}px`;
-      }
-
-      // Tell Ace to recalculate its layout
-      editor.resize(true);
+      try {
+        editor.renderer.updateFull();
+        const lineHeight = editor.renderer.lineHeight || 20;
+        const screenRows = editor.session.getScreenLength();
+        const hasMultipleLines = screenRows > 1;
+        const contentHeight = screenRows * lineHeight;
+        const topPadding = 10;
+        const bottomPadding = hasMultipleLines ? 10 : 0;
+        const totalPadding = topPadding + bottomPadding + 10;
+        const minHeight = 44;
+        const maxHeight = Math.floor(window.innerHeight * 0.5);
+        const newHeight = Math.max(
+          minHeight,
+          Math.min(contentHeight + totalPadding, maxHeight)
+        );
+        editor.container.style.height = `${newHeight}px`;
+        const content = editor.container.querySelector(".ace_content");
+        if (content)
+          content.style.paddingBottom = hasMultipleLines ? "10px" : "0px";
+        const discordTextArea = editor.container.closest('[class*="textArea"]');
+        if (discordTextArea) discordTextArea.style.height = `${newHeight}px`;
+        const channelTextArea = editor.container.closest(
+          '[class*="channelTextArea"]'
+        );
+        if (channelTextArea) channelTextArea.style.minHeight = `${newHeight}px`;
+        editor.resize(true);
+      } catch (e) {}
     };
 
-    // Listen to changes and update editor size
     editor.session.on("change", () => {
-      // Delay slightly to ensure renderer has updated
       setTimeout(updateHeight, 10);
     });
-
-    // Initial size calculation
     setTimeout(updateHeight, 100);
   }
 
@@ -1752,73 +1526,47 @@ module.exports = class VimMotionsPlugin {
         return;
       }
 
-      // Get Discord modules
-      const { MessageActions, SelectedChannelStore } = this.getDiscordModules();
-
-      // Get the current channel ID
-      const channelId = SelectedChannelStore?.getChannelId();
-      if (!channelId) {
-        this.log("Could not get channel ID", "error");
-        return;
-      }
-
+      const channelId = this.getCurrentChannelId();
       this.log(
         `Attempting to send message to channel ${channelId}: "${content}"`
       );
 
-      // Send the message using Discord's internal API
-      // The correct format requires a message object with specific structure
-      if (MessageActions && MessageActions.sendMessage) {
-        MessageActions.sendMessage(
-          channelId,
-          {
-            content: content.trim(),
-            invalidEmojis: [],
-            validNonShortcutEmojis: [],
-          },
-          undefined,
-          {}
-        );
-        this.log("Message sent successfully");
-      } else {
-        this.log("Could not find MessageActions module", "error");
-        this.log(`MessageActions: ${MessageActions}`);
-      }
+      this.dcModules.MessageActions.sendMessage(
+        channelId,
+        {
+          content: content.trim(),
+          invalidEmojis: [],
+          validNonShortcutEmojis: [],
+        },
+        undefined,
+        {}
+      );
+      this.log("Message sent successfully");
     } catch (error) {
       this.log(`Error sending message: ${error.message}`, "error");
       console.error("[VimMotions] Full error:", error);
     }
   }
 
-  isEditMode(originalInput) {
-    // Check if we're in edit mode by looking for the operations container
-    const container = originalInput.closest('[class*="channelTextArea"]');
-    if (!container) return false;
-
-    // Look for the "escape to cancel • enter to save" UI
-    const parent = container.parentElement;
-    if (!parent) return false;
-
-    const operations = parent.querySelector('[class*="operations"]');
-
-    this.log(`isEditMode: ${operations !== null}`);
-
-    return operations !== null;
-  }
-
   editMessage(content, e) {
     try {
-      // Target the message DOM element from the event
+      // Normalize line endings (keep real \n characters)
+      if (typeof content === "string") {
+        // Make sure Windows-style line endings are normalized
+        content = content.replace(/\r\n/g, "\n");
+      } else {
+        this.log("editMessage called without valid string content", "warn");
+        return;
+      }
+
       const messageDiv = e?.target?.closest
         ? e.target.closest("li > [class^=message]")
         : null;
-
       if (!messageDiv) {
         this.log("Cannot find message element", "error");
         return;
       }
 
-      // Get React internal instance for the message element
       const instance = BdApi.ReactUtils.getInternalInstance(messageDiv);
       if (!instance) {
         this.log("Cannot find React instance for message", "error");
@@ -1826,8 +1574,6 @@ module.exports = class VimMotionsPlugin {
       }
 
       const walkable = ["child", "memoizedProps", "sibling"];
-
-      // Try to locate the message object (baseMessage preferred)
       const messageObj =
         BdApi.Utils.findInTree(instance, (m) => m?.baseMessage, { walkable })
           ?.baseMessage ??
@@ -1846,18 +1592,21 @@ module.exports = class VimMotionsPlugin {
         return;
       }
 
-      const { MessageStore } = this.getDiscordModules();
-      if (!MessageStore || !MessageStore.editMessage) {
+      if (
+        !this.dcModules.MessageStore ||
+        !this.dcModules.MessageStore.editMessage
+      ) {
         this.log("Cannot find MessageStore.editMessage", "error");
         return;
       }
 
+      // ✅ Send with preserved newlines
       this.log(
-        `Editing message ${messageId} in channel ${channelId} with content: ${content}`
+        `Editing message ${messageId} in channel ${channelId} with content:\n${content}`
       );
-
-      // Call Discord's internal edit API
-      MessageStore.editMessage(channelId, messageId, { content });
+      this.dcModules.MessageStore.editMessage(channelId, messageId, {
+        content,
+      });
     } catch (err) {
       this.log(`Failed to edit message: ${err?.message || err}`, "error");
     }
@@ -1865,49 +1614,73 @@ module.exports = class VimMotionsPlugin {
 
   destroyAceEditor(originalInput) {
     const editorData = this.aceEditors.get(originalInput);
-    if (editorData) {
-      const { editor, wrapper, observer, pollInterval, emojiClickListener } =
-        editorData;
+    if (!editorData) return;
 
-      // Disconnect observer if it exists
-      if (observer) {
-        observer.disconnect();
+    try {
+      const {
+        editor,
+        wrapper,
+        keydownListener,
+        clickListener,
+        focusListener,
+        editorDiv,
+        textarea,
+      } = editorData;
+
+      // Remove event listeners
+      try {
+        const ta =
+          textarea ||
+          (editor &&
+            editor.textInput &&
+            editor.textInput.getElement &&
+            editor.textInput.getElement());
+        if (ta && keydownListener)
+          ta.removeEventListener("keydown", keydownListener);
+        if (editorDiv && clickListener)
+          editorDiv.removeEventListener("click", clickListener);
+        if (editorDiv && focusListener) {
+          editorDiv.removeEventListener("focus", focusListener, true);
+          editorDiv.removeEventListener("click", focusListener);
+        }
+        if (ta && focusListener) ta.removeEventListener("focus", focusListener);
+      } catch (err) {}
+
+      // Destroy Ace editor safely
+      try {
+        if (editor && typeof editor.destroy === "function") editor.destroy();
+        else if (editor && typeof editor.deactivate === "function")
+          editor.deactivate();
+      } catch (e) {
+        this.log(`Error destroying editor: ${e?.message || e}`, "warn");
       }
 
-      // Clear polling interval if it exists
-      if (pollInterval) {
-        clearInterval(pollInterval);
-      }
-
-      // Destroy Ace editor
-      editor.destroy();
-
-      // Remove wrapper
-      if (wrapper && wrapper.parentNode) {
+      if (wrapper && wrapper.parentNode)
         wrapper.parentNode.removeChild(wrapper);
-      }
+      if (originalInput && originalInput.classList)
+        originalInput.classList.remove("vim-hidden-input");
 
-      // Show original input
-      originalInput.classList.remove("vim-hidden-input");
+      // try to focus the original native input as a last-ditch fallback
+      try {
+        if (originalInput && typeof originalInput.focus === "function")
+          originalInput.focus();
+      } catch (e) {}
+    } finally {
       this.aceEditors.delete(originalInput);
+      this.activeInputs.delete(originalInput);
     }
   }
 
   getPlaceholderText(originalInput) {
-    // Try to find placeholder from Discord's structure
     const container = originalInput.closest('[class*="channelTextArea"]');
     if (container) {
       const placeholder = container.querySelector('[class*="placeholder"]');
-      if (placeholder) {
-        return placeholder.textContent || placeholder.innerText;
-      }
+      if (placeholder) return placeholder.textContent || placeholder.innerText;
     }
-    // Fallback placeholder
     return "Message #channel";
   }
 
   setPlaceholder(editor, placeholderText) {
-    // Create a placeholder div that shows when editor is empty
     const editorDiv = editor.container;
     const placeholderDiv = document.createElement("div");
     placeholderDiv.className = "ace-placeholder";
@@ -1925,27 +1698,21 @@ module.exports = class VimMotionsPlugin {
 
     editorDiv.appendChild(placeholderDiv);
 
-    // Show/hide placeholder based on editor content
     const updatePlaceholder = () => {
       const isEmpty = editor.getValue().trim() === "";
       placeholderDiv.style.display = isEmpty ? "block" : "none";
     };
 
-    // Initial check
     updatePlaceholder();
-
-    // Update on content change
     editor.session.on("change", updatePlaceholder);
   }
-
-  // ============================================================================
-  // Logging
-  // ============================================================================
 
   log(message, type = "info") {
     console.log(`[VimMotions] ${message}`);
     if (this.config?.debugMode) {
-      BdApi.UI.showToast(`[VimMotions] ${message}`, { type });
+      try {
+        BdApi.UI.showToast(`[VimMotions] ${message}`, { type });
+      } catch (e) {}
     }
   }
 };
