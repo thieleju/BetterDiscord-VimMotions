@@ -1127,6 +1127,25 @@ module.exports = class VimMotionsPlugin {
 
           // Update our cache to match the editor
           this.draftCache.set(channelId, activeEditor.getValue());
+
+          // Re-focus the editor after emoji insertion
+          setTimeout(() => {
+            try {
+              // Find the editor data to get the textarea
+              for (const [input, editorData] of this.aceEditors.entries()) {
+                if (editorData.editor === activeEditor) {
+                  activeEditor.focus();
+                  if (editorData.textarea) {
+                    editorData.textarea.focus();
+                  }
+                  this.log("Re-focused editor after emoji insertion");
+                  break;
+                }
+              }
+            } catch (e) {
+              this.log(`Error re-focusing editor: ${e.message}`, "warn");
+            }
+          }, 50);
         } catch (e) {
           this.log(`Error handling draft change: ${e.message}`, "warn");
         }
@@ -1401,16 +1420,17 @@ module.exports = class VimMotionsPlugin {
         try {
           this.justEnteredInsertMode = false;
 
+          // Update CSS classes immediately
+          const editorDiv = editor.container.closest(".vim-ace-editor");
+          if (editorDiv) {
+            editorDiv.classList.remove("vim-normal-mode", "vim-visual-mode");
+            editorDiv.classList.add("vim-insert-mode");
+          }
+
           // Try direct Vim state change first
           if (currentVimMode.state?.vim) {
             currentVimMode.state.vim.insertMode = true;
             this.currentMode = "insert";
-
-            const editorDiv = editor.container.closest(".vim-ace-editor");
-            if (editorDiv) {
-              editorDiv.classList.remove("vim-normal-mode", "vim-visual-mode");
-              editorDiv.classList.add("vim-insert-mode");
-            }
 
             setTimeout(() => (this.justEnteredInsertMode = false), 60);
             return;
@@ -1418,6 +1438,7 @@ module.exports = class VimMotionsPlugin {
 
           // Fallback: simulate pressing "i"
           vim.handleKey(currentVimMode, "i", null);
+          this.currentMode = "insert"; // Ensure mode is set even with fallback
           setTimeout(() => (this.justEnteredInsertMode = false), 60);
         } catch (e) {
           // ignore all errors silently
