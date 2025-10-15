@@ -2,7 +2,7 @@
  * @name VimMotions
  * @author Julian
  * @description Vim motions for Discord using Ace Editor
- * @version 1.2.0
+ * @version 1.2.1
  * @website https://github.com/thieleju/BetterDiscord-VimMotions
  * @source https://github.com/thieleju/BetterDiscord-VimMotions/blob/main/plugins/VimMotions.plugin.js
  * @updateUrl https://github.com/thieleju/BetterDiscord-VimMotions/raw/refs/heads/main/plugins/VimMotions.plugin.js
