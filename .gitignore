@@ -13,3 +13,6 @@
 !.releaserc.json
 !package.json
 !package-lock.json
+
+!scripts/
+!scripts/build.js

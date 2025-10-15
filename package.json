@@ -3,6 +3,7 @@
   "description": "VimMotions plugin for BetterDiscord (Ace Editor + Vim mode)",
   "private": true,
   "scripts": {
+    "build": "node scripts/build.js",
     "release": "semantic-release"
   },
   "devDependencies": {
@@ -11,6 +12,7 @@
     "@semantic-release/git": "^10.0.0",
     "@semantic-release/github": "^9.0.0",
     "@semantic-release/release-notes-generator": "^10.0.0",
-    "semantic-release": "^21.0.0"
+    "semantic-release": "^21.0.0",
+    "terser": "^5.44.0"
   }
 }
