@@ -1,3 +1,10 @@
+# [1.2.0](https://github.com/thieleju/BetterDiscord-VimMotions/compare/VimMotions-v1.1.0...VimMotions-v1.2.0) (2025-10-15)
+
+
+### Features
+
+* implement semantic release workflow and build script for plugin versioning ([baed13a](https://github.com/thieleju/BetterDiscord-VimMotions/commit/baed13ab45db5326d12436ee17fba3bfdf57f3d1))
+
 # [1.1.0](https://github.com/thieleju/BetterDiscord-VimMotions/compare/VimMotions-v1.0.0...VimMotions-v1.1.0) (2025-10-15)
 
 
