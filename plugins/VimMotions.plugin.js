@@ -19,6 +19,8 @@ module.exports = class VimMotionsPlugin {
     this.aceLoaded = false;
     this.draftCache = new Map(); // Cache channel ID -> draft content
     this.channelChangeUnsubscribe = null; // Flux dispatcher unsubscribe function
+    this.draftChangeUnsubscribe = null; // For emoji picker support
+    this.lastProcessedDraft = new Map(); // Track last processed draft to avoid duplicates
 
     this.defaultConfig = {
       debugMode: false,
@@ -67,6 +69,7 @@ module.exports = class VimMotionsPlugin {
     }
 
     this.setupChannelChangeListener();
+    this.setupDraftChangeListener();
     this.addStyles();
     this.startObserving();
     this.log("VimMotions Started");
@@ -89,9 +92,28 @@ module.exports = class VimMotionsPlugin {
       this.channelChangeUnsubscribe = null;
     }
 
+    // Unsubscribe from draft change events
+    if (this.draftChangeUnsubscribe) {
+      try {
+        this.draftChangeUnsubscribe();
+        this.log("Unsubscribed from draft change events");
+      } catch (e) {
+        this.log(
+          `Error unsubscribing from draft changes: ${e.message}`,
+          "warn"
+        );
+      }
+      this.draftChangeUnsubscribe = null;
+    }
+
     // Clear draft cache
     if (this.draftCache) {
       this.draftCache.clear();
+    }
+
+    // Clear last processed draft tracking
+    if (this.lastProcessedDraft) {
+      this.lastProcessedDraft.clear();
     }
 
     // Destroy all Ace editors
@@ -983,6 +1005,145 @@ module.exports = class VimMotionsPlugin {
     }
   }
 
+  // Listen for draft changes from Discord (e.g., emoji picker)
+  setupDraftChangeListener() {
+    // Don't subscribe if already subscribed
+    if (this.draftChangeUnsubscribe) {
+      this.log("Draft change listener already set up, skipping");
+      return;
+    }
+
+    if (!this.dcModules.DraftStore) {
+      this.log("DraftStore not found, cannot setup draft listener", "warn");
+      return;
+    }
+
+    try {
+      const Dispatcher = BdApi.Webpack.getModule(
+        (m) => m.dispatch && m.subscribe
+      );
+
+      if (!Dispatcher) {
+        this.log("Flux Dispatcher not found for draft listener", "warn");
+        return;
+      }
+
+      const handleDraftChange = (data) => {
+        try {
+          const channelId = this.getCurrentChannelId();
+          if (!channelId || data.channelId !== channelId) return;
+
+          // Get the draft content from Discord
+          const draftContent = this.dcModules.DraftStore.getDraft(channelId, 0);
+          if (!draftContent || !draftContent.trim()) return;
+
+          // Check if we've already processed this exact draft content
+          const lastProcessed = this.lastProcessedDraft.get(channelId) || "";
+          if (lastProcessed === draftContent) {
+            this.log(`Already processed this draft content, skipping`);
+            return;
+          }
+
+          // Find the active Ace editor for the current channel
+          let activeEditor = null;
+          for (const [originalInput, editorData] of this.aceEditors.entries()) {
+            const container = originalInput.closest(
+              '[class*="channelTextArea"]'
+            );
+            const isMainChatInput =
+              container && !this.isEditMode(originalInput) && editorData.editor;
+
+            if (isMainChatInput) {
+              activeEditor = editorData.editor;
+              break;
+            }
+          }
+
+          if (!activeEditor) return;
+
+          // Get current editor content
+          const editorContent = activeEditor.getValue();
+
+          // Check if the draft content is already in the editor (avoid duplicates)
+          if (editorContent.includes(draftContent.trim())) {
+            // Draft content is already in editor, just clear the draft
+            this.dcModules.DraftActions.clearDraft(channelId, 0);
+            this.lastProcessedDraft.set(channelId, draftContent);
+            this.log(`Draft content already in editor, cleared draft`);
+            return;
+          }
+
+          // Check if editor is empty AND we have a cached draft for this channel
+          // This indicates we're in the middle of a channel switch/load, so skip
+          const hasCachedDraft =
+            this.draftCache.has(channelId) &&
+            this.draftCache.get(channelId).trim();
+          if (
+            (!editorContent || editorContent.trim() === "") &&
+            hasCachedDraft
+          ) {
+            this.log(
+              `Editor is empty but we have cached draft, skipping to avoid conflicts during channel load`
+            );
+            return;
+          }
+
+          // Extract only the NEW content (the emoji that was just added)
+          // Calculate the difference between current draft and last processed draft
+          let newContent = draftContent.trim();
+
+          if (lastProcessed && draftContent.startsWith(lastProcessed)) {
+            // Draft has accumulated - extract only the new part
+            newContent = draftContent.substring(lastProcessed.length).trim();
+            this.log(
+              `Extracted new emoji from accumulated draft: "${newContent}" (was: "${lastProcessed}", now: "${draftContent}")`
+            );
+          } else if (lastProcessed) {
+            // Draft was replaced entirely - use the whole thing
+            this.log(`Draft was replaced, using full content: "${newContent}"`);
+          } else {
+            // First emoji or no previous draft
+            this.log(`First emoji or no previous draft: "${newContent}"`);
+          }
+
+          // Skip if no new content to insert
+          if (!newContent) {
+            this.log(`No new content to insert, skipping`);
+            this.lastProcessedDraft.set(channelId, draftContent);
+            return;
+          }
+
+          // Insert the emoji at cursor position
+          const cursor = activeEditor.getCursorPosition();
+          activeEditor.session.insert(cursor, newContent);
+
+          this.log(`Inserted emoji from draft: "${newContent}"`);
+
+          // Mark this draft as processed BEFORE clearing (to prevent re-processing)
+          this.lastProcessedDraft.set(channelId, draftContent);
+
+          // Clear the draft from DraftStore
+          this.dcModules.DraftActions.clearDraft(channelId, 0);
+
+          // Update our cache to match the editor
+          this.draftCache.set(channelId, activeEditor.getValue());
+        } catch (e) {
+          this.log(`Error handling draft change: ${e.message}`, "warn");
+        }
+      };
+
+      // Subscribe to draft changes
+      this.draftChangeUnsubscribe = Dispatcher.subscribe(
+        "DRAFT_CHANGE",
+        handleDraftChange
+      );
+
+      this.log("Subscribed to draft change events");
+    } catch (e) {
+      this.log(`Failed to setup draft change listener: ${e.message}`, "error");
+    }
+  }
+
   attachAceEditor(originalInput) {
     if (!this.aceLoaded || !window.ace) {
       this.log("Ace Editor not loaded", "error");
@@ -1725,6 +1886,7 @@ module.exports = class VimMotionsPlugin {
       try {
         this.dcModules.DraftActions.clearDraft(channelId, 0);
         this.draftCache.delete(channelId);
+        this.lastProcessedDraft.delete(channelId);
         this.log(`Cleared draft for channel ${channelId}`);
       } catch (e) {
         this.log(`Failed to clear draft: ${e.message}`, "warn");
