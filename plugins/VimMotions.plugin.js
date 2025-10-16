@@ -414,8 +414,8 @@ module.exports = class VimMotionsPlugin {
           React.createElement(
             SettingItem,
             {
-              name: "Font Family",
-              note: "Font family for the editor (e.g., Consolas, Monaco, Courier New)",
+              name: "Monospace Font",
+              note: "Monospace Font for the editor (e.g., Fira Code,Consolas, Monaco, Courier New)",
             },
             TextInput
               ? React.createElement(TextInput, {
