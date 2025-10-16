@@ -10,6 +10,34 @@
 
 const React = BdApi.React;
 
+// Flux Store for managing VimMotions state
+const Dispatcher = BdApi.Webpack.getModule((m) => m.dispatch && m.subscribe);
+const Flux = BdApi.Webpack.getModule(BdApi.Webpack.Filters.byKeys("Store"));
+const useStateFromStores = BdApi.Webpack.getByStrings("useStateFromStores", {
+  searchExports: true,
+});
+
+class VimMotionsStore extends Flux.Store {
+  constructor(dispatcher) {
+    super(dispatcher, {});
+    // Load global enabled state, default to true
+    this._globalEnabled =
+      BdApi.Data.load("VimMotions", "globalEnabled") ?? true;
+  }
+
+  isEnabled() {
+    return this._globalEnabled;
+  }
+
+  setEnabled(enabled) {
+    this._globalEnabled = enabled;
+    BdApi.Data.save("VimMotions", "globalEnabled", this._globalEnabled);
+    this.emitChange();
+  }
+}
+
+const VimStore = new VimMotionsStore(Dispatcher);
+
 module.exports = class VimMotionsPlugin {
   constructor(meta) {
     this.meta = meta;
@@ -24,6 +52,7 @@ module.exports = class VimMotionsPlugin {
     this.channelChangeUnsubscribe = null; // Flux dispatcher unsubscribe function
     this.draftChangeUnsubscribe = null; // For emoji picker support
     this.lastProcessedDraft = new Map(); // Track last processed draft to avoid duplicates
+    this.chatButtonPatchUnpatch = null; // Store unpatch function for chat buttons
 
     this.defaultConfig = {
       debugMode: false,
@@ -74,12 +103,23 @@ module.exports = class VimMotionsPlugin {
     this.setupChannelChangeListener();
     this.setupDraftChangeListener();
     this.addStyles();
+    this.patchChatButtons();
     this.startObserving();
     this.log("VimMotions Started");
   }
 
   stop() {
     this.log("Stopping VimMotions...");
+
+    // Unpatch chat buttons
+    if (this.chatButtonPatchUnpatch) {
+      try {
+        this.chatButtonPatchUnpatch();
+      } catch (e) {
+        this.log(`Failed to unpatch chat buttons: ${e.message}`, "error");
+      }
+      this.chatButtonPatchUnpatch = null;
+    }
 
     // Unsubscribe from channel change events
     if (this.channelChangeUnsubscribe) {
@@ -831,7 +871,7 @@ module.exports = class VimMotionsPlugin {
     }
   }
 
-  // Styles (unchanged)
+  // Styles
   addStyles() {
     const fontSize = this.config?.fontSize || this.defaultConfig.fontSize;
     const fontFamily = this.config?.fontFamily || this.defaultConfig.fontFamily;
@@ -854,8 +894,8 @@ module.exports = class VimMotionsPlugin {
     BdApi.DOM.addStyle(
       "VimMotions",
       `
-      .vim-ace-wrapper { position: relative; width: 100%; min-height: 44px; overflow: visible; }
-      .vim-ace-editor { width: 100% !important; min-height: 44px; position: relative; }
+      .vim-ace-wrapper { position: relative; width: 100%; min-height: 44px; overflow: visible; min-height: var(--custom-channel-textarea-text-area-height); }
+      .vim-ace-editor { width: 100% !important; min-height: 44px; position: relative; min-height: var(--custom-channel-textarea-text-area-height); }
       .vim-ace-editor .ace_editor { font-family: '${fontFamily}', monospace !important; font-size: ${fontSize}px !important; color: ${fontColor} !important; background-color: ${backgroundColor} !important; width: 100% !important; }
       .vim-ace-editor .ace_scroller { overflow-y: auto !important; overflow-x: hidden !important; }
       .vim-ace-editor .ace_scrollbar, .vim-ace-editor .ace_scrollbar-v, .vim-ace-editor .ace_scrollbar-h { display: none !important; }
@@ -872,8 +912,182 @@ module.exports = class VimMotionsPlugin {
       .vim-ace-editor.vim-normal-mode .ace_cursor-layer, .vim-ace-editor.vim-visual-mode .ace_cursor-layer { z-index: 1 !important; opacity: 1; }
       .vim-ace-editor .ace_gutter { background: ${backgroundColor} !important; color: ${fontColor} !important; }
       .vim-hidden-input { display: none !important; }
+      .vim-toggle-button {
+        background: transparent;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+      }
+      .vim-button-inner {
+        height: 32px;
+        width: 32px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .vim-toggle-button:hover .vim-button-text {
+        color: var(--interactive-hover);
+      }
+      .vim-toggle-button.vim-disabled .vim-button-text {
+        text-decoration: line-through;
+      }
+      .vim-button-text {
+        color: var(--interactive-normal);
+        font-weight: 700;
+        font-size: 14px;
+        user-select: none;
+      }
     `
     );
+  }
+
+  // VIM Toggle Button Component
+  createVimButton() {
+    const ChatButton = BdApi.Webpack.getBySource(
+      "CHAT_INPUT_BUTTON_NOTIFICATION"
+    )?.Z;
+
+    if (!ChatButton) {
+      this.log("ChatButton component not found", "error");
+      return null;
+    }
+
+    // Bind plugin instance to use in callback
+    const plugin = this;
+
+    const VimToggleButton = () => {
+      // Get global enabled state
+      const enabled = useStateFromStores([VimStore], () =>
+        VimStore.isEnabled()
+      );
+
+      // Don't use useCallback - we want fresh closure every render
+      const handleClick = (e) => {
+        e?.preventDefault?.();
+        e?.stopPropagation?.();
+
+        // Get fresh state directly from store
+        const currentState = VimStore.isEnabled();
+        const newState = !currentState;
+
+        plugin.log(
+          `[CLICK EVENT] Toggling VimMotions globally, current state: ${currentState}, new state: ${newState}`
+        );
+
+        VimStore.setEnabled(newState);
+
+        // Small delay to ensure state is updated
+        setTimeout(() => {
+          // Find ALL inputs and attach/destroy editors accordingly
+          const inputs = document.querySelectorAll(
+            '[data-slate-editor="true"], div[role="textbox"][contenteditable="true"]'
+          );
+
+          plugin.log(`Found ${inputs.length} inputs to process globally`);
+
+          inputs.forEach((input) => {
+            if (plugin.shouldAttachToInput(input)) {
+              plugin.log(
+                `Processing input, newState=${newState}, has editor: ${plugin.aceEditors.has(
+                  input
+                )}`
+              );
+
+              if (newState) {
+                // Enable: attach editor
+                // First ensure it's fully destroyed and removed from tracking
+                if (plugin.aceEditors.has(input)) {
+                  plugin.destroyAceEditor(input);
+                }
+                // Remove from activeInputs to allow re-attachment
+                plugin.activeInputs.delete(input);
+                // Now attach the editor
+                plugin.attachAceEditor(input);
+                plugin.log("Re-attached Ace editor after enabling");
+              } else {
+                // Disable: destroy editor if attached
+                if (plugin.aceEditors.has(input)) {
+                  plugin.destroyAceEditor(input);
+                  plugin.log("Destroyed Ace editor after disabling");
+                }
+              }
+            }
+          });
+
+          this.log(
+            `VimMotions ${newState ? "enabled" : "disabled"} globally`,
+            "info"
+          );
+        }, 10);
+      };
+
+      return React.createElement(
+        BdApi.Components.Tooltip,
+        {
+          text: enabled ? "VimMotions Enabled" : "VimMotions Disabled",
+        },
+        (props) =>
+          React.createElement(
+            "div",
+            {
+              ...props,
+              onClick: handleClick,
+              onMouseDown: handleClick,
+              className: `vim-toggle-button ${enabled ? "" : "vim-disabled"}`,
+            },
+            React.createElement(
+              ChatButton,
+              { className: "vim-button-inner" },
+              React.createElement(
+                "span",
+                { className: "vim-button-text" },
+                "VIM"
+              )
+            )
+          )
+      );
+    };
+
+    return React.createElement(VimToggleButton, { key: "vim-toggle" });
+  }
+
+  // Patch chat buttons to add VIM toggle button
+  patchChatButtons() {
+    try {
+      const ChatButtonsGroup = BdApi.Webpack.getBySource(
+        "type",
+        "showAllButtons",
+        "paymentsBlocked"
+      )?.Z;
+
+      if (!ChatButtonsGroup) {
+        this.log("ChatButtonsGroup not found, cannot add VIM button", "error");
+        return;
+      }
+
+      BdApi.Patcher.after(
+        this.meta.name,
+        ChatButtonsGroup,
+        "type",
+        (_, args, res) => {
+          if (
+            args.length == 2 &&
+            !args[0].disabled &&
+            args[0].type.analyticsName == "normal" &&
+            res.props.children &&
+            Array.isArray(res.props.children)
+          ) {
+            // Add global VIM button (no channel-specific state)
+            res.props.children.unshift(this.createVimButton());
+          }
+        }
+      );
+
+      this.log("Successfully patched chat buttons");
+    } catch (e) {
+      this.log(`Failed to patch chat buttons: ${e.message}`, "error");
+    }
   }
 
   // Input Observation & Ace Editor Management
@@ -903,7 +1117,10 @@ module.exports = class VimMotionsPlugin {
         : [];
       inputs.forEach((input) => {
         if (!this.activeInputs.has(input) && this.shouldAttachToInput(input)) {
-          this.attachAceEditor(input);
+          // Check if VimMotions is enabled globally
+          if (VimStore.isEnabled()) {
+            this.attachAceEditor(input);
+          }
         }
       });
     });
@@ -952,25 +1169,11 @@ module.exports = class VimMotionsPlugin {
     };
 
     // Use Flux dispatcher to listen for channel changes
-    try {
-      const Dispatcher = BdApi.Webpack.getModule(
-        (m) => m.dispatch && m.subscribe
-      );
-      if (Dispatcher) {
-        this.channelChangeUnsubscribe = Dispatcher.subscribe(
-          "CHANNEL_SELECT",
-          handleChannelChange
-        );
-        this.log("Subscribed to channel change events");
-      } else {
-        this.log("Flux Dispatcher not found", "warn");
-      }
-    } catch (e) {
-      this.log(
-        `Failed to setup channel change listener: ${e.message}`,
-        "error"
-      );
-    }
+    this.channelChangeUnsubscribe = Dispatcher.subscribe(
+      "CHANNEL_SELECT",
+      handleChannelChange
+    );
+    this.log("Subscribed to channel change events");
   }
 
   // Save draft for current channel from Ace editor
@@ -1022,15 +1225,6 @@ module.exports = class VimMotionsPlugin {
     }
 
     try {
-      const Dispatcher = BdApi.Webpack.getModule(
-        (m) => m.dispatch && m.subscribe
-      );
-
-      if (!Dispatcher) {
-        this.log("Flux Dispatcher not found for draft listener", "warn");
-        return;
-      }
-
       const handleDraftChange = (data) => {
         try {
           const channelId = this.getCurrentChannelId();
@@ -1983,14 +2177,25 @@ module.exports = class VimMotionsPlugin {
 
       if (wrapper && wrapper.parentNode)
         wrapper.parentNode.removeChild(wrapper);
-      if (originalInput && originalInput.classList)
-        originalInput.classList.remove("vim-hidden-input");
 
-      // try to focus the original native input as a last-ditch fallback
-      try {
-        if (originalInput && typeof originalInput.focus === "function")
-          originalInput.focus();
-      } catch (e) {}
+      // Restore original input
+      if (originalInput) {
+        if (originalInput.classList)
+          originalInput.classList.remove("vim-hidden-input");
+
+        // Make sure input is visible and editable
+        originalInput.style.display = "";
+        originalInput.contentEditable = "true";
+
+        // Focus the original input
+        try {
+          if (typeof originalInput.focus === "function") {
+            setTimeout(() => {
+              originalInput.focus();
+            }, 10);
+          }
+        } catch (e) {}
+      }
     } finally {
       this.aceEditors.delete(originalInput);
       this.activeInputs.delete(originalInput);
