@@ -55,7 +55,6 @@ module.exports = class VimMotionsPlugin {
     this.chatButtonPatchUnpatch = null; // Store unpatch function for chat buttons
 
     this.defaultConfig = {
-      debugMode: false,
       fontSize: 16,
       fontFamily: "Consolas",
       fontColor: "#e3e3e3",
@@ -243,10 +242,6 @@ module.exports = class VimMotionsPlugin {
 
     if (saved) {
       this.config = {
-        debugMode:
-          saved.settings?.debugMode ??
-          saved.debugMode ??
-          this.defaultConfig.debugMode,
         fontSize:
           saved.settings?.fontSize ??
           saved.fontSize ??
@@ -293,7 +288,6 @@ module.exports = class VimMotionsPlugin {
 
   saveConfig() {
     const dataToSave = {
-      debugMode: this.config.debugMode,
       fontSize: this.config.fontSize,
       fontFamily: this.config.fontFamily,
       fontColor: this.config.fontColor,
@@ -323,7 +317,6 @@ module.exports = class VimMotionsPlugin {
 
         const updateConfig = (key, value) => {
           const newConfig = {
-            debugMode: key === "debugMode" ? value : config.debugMode,
             fontSize: key === "fontSize" ? value : config.fontSize,
             fontFamily: key === "fontFamily" ? value : config.fontFamily,
             fontColor: key === "fontColor" ? value : config.fontColor,
@@ -415,7 +408,7 @@ module.exports = class VimMotionsPlugin {
             SettingItem,
             {
               name: "Monospace Font",
-              note: "Monospace Font for the editor (e.g., Fira Code,Consolas, Monaco, Courier New)",
+              note: "Monospace Font for the editor (e.g., Fira Code, Consolas, Monaco, Courier New)",
             },
             TextInput
               ? React.createElement(TextInput, {
@@ -530,18 +523,7 @@ module.exports = class VimMotionsPlugin {
               onChange: (v) => updateConfig("sendInNormalMode", v),
             })
           ),
-          React.createElement(
-            SettingItem,
-            {
-              name: "Debug Mode",
-              note: "Show debug messages as toasts",
-              inline: true,
-            },
-            React.createElement(SwitchInput, {
-              value: config.debugMode,
-              onChange: (v) => updateConfig("debugMode", v),
-            })
-          ),
+
           // Custom mappings UI unchanged...
           React.createElement(
             "div",
@@ -2239,11 +2221,26 @@ module.exports = class VimMotionsPlugin {
   }
 
   log(message, type = "info") {
-    console.log(`[VimMotions] ${message}`);
-    if (this.config?.debugMode) {
-      try {
-        BdApi.UI.showToast(`[VimMotions] ${message}`, { type });
-      } catch (e) {}
-    }
+    const prefix = "[VimMotions]";
+    const styles = {
+      info: "color: #3498db", // blue
+      debug: "color: #9b59b6", // purple
+      success: "color: #2ecc71", // green
+      warn: "color: #f39c12", // yellow/orange
+      error: "color: #e74c3c", // red
+    };
+
+    const typeMap = {
+      info: console.info,
+      debug: console.debug,
+      success: console.log,
+      warn: console.warn,
+      error: console.error,
+    };
+
+    const logFn = typeMap[type] || console.log;
+    const style = styles[type] || styles.info;
+
+    logFn(`%c${prefix}`, style, message);
   }
 };
