@@ -1,3 +1,15 @@
+# [1.3.0](https://github.com/thieleju/BetterDiscord-VimMotions/compare/VimMotions-v1.2.1...VimMotions-v1.3.0) (2025-10-16)
+
+
+### Bug Fixes
+
+* update font setting description for clarity ([44f0ad4](https://github.com/thieleju/BetterDiscord-VimMotions/commit/44f0ad4b73c8bc48052393a546ef615d24b081f1))
+
+
+### Features
+
+* Button to enable/disable the ace editor globally ([cd33882](https://github.com/thieleju/BetterDiscord-VimMotions/commit/cd33882d28c33963eb48011637e8213a0560b1d5))
+
 ## [1.2.1](https://github.com/thieleju/BetterDiscord-VimMotions/compare/VimMotions-v1.2.0...VimMotions-v1.2.1) (2025-10-15)
 
 
